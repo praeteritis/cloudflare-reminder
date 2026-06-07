@@ -1,22 +1,21 @@
 name = "personal-mail-reminder"
 main = "src/index.ts"
 compatibility_date = "2026-06-07"
-workers_dev = true
+workers_dev = false
 preview_urls = false
+keep_vars = true
 
-routes = [
-  { pattern = "reminder.yang-cc.cc.cd", custom_domain = true },
-]
+# Routes/custom domains are managed in the Cloudflare dashboard so this public
+# config does not expose a personal domain.
 
 [triggers]
 crons = ["* * * * *"]
 
-[vars]
-TIMEZONE = "Asia/Shanghai"
-FROM_EMAIL = "个人提醒助手 <reminder@yang-cc.cc.cd>"
-REPLY_EMAIL = "reminder@yang-cc.cc.cd"
+# Runtime variables are configured in the Worker dashboard and kept on deploy:
+# TIMEZONE, FROM_EMAIL, REPLY_EMAIL, EMAIL_DELIVERY.
+# Local development reads the same keys from .dev.vars.
 
 [[d1_databases]]
 binding = "DB"
 database_name = "personal-reminder"
-database_id = "67d5cc57-2e79-4062-95e0-dcc08221ff23"
+# database_id is intentionally omitted for the public repository.

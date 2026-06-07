@@ -35,13 +35,18 @@ npm install
 npm run d1:create
 ```
 
-把命令输出的 `database_id` 写入 `wrangler.toml`：
+`wrangler.toml` 只提交公开安全的 D1 绑定名和数据库名，不提交真实 `database_id`：
 
 ```toml
 [[d1_databases]]
 binding = "DB"
 database_name = "personal-reminder"
-database_id = "你的 database_id"
+```
+
+复制本地私有部署配置，并把 D1 创建命令输出的 `database_id` 写入 `wrangler.local.toml`。这个文件已被 git 忽略，不会进入公开仓库：
+
+```bash
+cp wrangler.local.toml.example wrangler.local.toml
 ```
 
 应用数据库结构：
@@ -50,22 +55,20 @@ database_id = "你的 database_id"
 npm run d1:migrate:remote
 ```
 
-### 3. 配置域名和邮件地址
+### 3. 配置 Worker 变量和域名
 
-在 `wrangler.toml` 中配置管理台域名、发信地址和回信地址：
+公开仓库不要提交真实域名、邮箱或 D1 id。当前 `wrangler.toml` 设置了 `keep_vars = true`，因此生产环境的 Worker Variables 可以在 Cloudflare Dashboard 中维护，并在 `wrangler deploy` 时保留。
 
-```toml
-routes = [
-  { pattern = "reminder.your-domain.com", custom_domain = true },
-]
+在 Worker 的 Variables 中配置：
 
-[vars]
-TIMEZONE = "Asia/Shanghai"
-FROM_EMAIL = "个人提醒助手 <reminder@your-domain.com>"
-REPLY_EMAIL = "reminder@your-domain.com"
-```
+- `TIMEZONE`：例如 `Asia/Shanghai`。
+- `FROM_EMAIL`：例如 `个人提醒助手 <reminder@your-domain.com>`。
+- `REPLY_EMAIL`：例如 `reminder@your-domain.com`。
+- `EMAIL_DELIVERY`：生产环境可设为 `resend`，本地开发默认是 `log`。
 
-也可以用脚本快速设置邮件地址：
+在 Worker 的 Settings/Triggers 或 Custom Domains 中配置访问域名。仓库中的 `wrangler.toml` 不提交 `routes`，避免暴露个人域名。
+
+本地开发可以用脚本快速写入被 git 忽略的 `.dev.vars`：
 
 ```bash
 npm run config:email -- --domain your-domain.com
@@ -112,11 +115,7 @@ npx wrangler email routing rules create your-domain.com \
 npm run deploy
 ```
 
-当前项目示例线上地址：
-
-```text
-https://reminder.yang-cc.cc.cd/
-```
+`npm run deploy` 使用本地私有的 `wrangler.local.toml`，因此可以绑定远程 D1，但不会把 `database_id` 提交到仓库。部署后访问你在 Cloudflare Dashboard 中绑定的 Worker 域名或自定义域名。
 
 ## 使用说明
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const args = parseArgs(process.argv.slice(2));
@@ -11,8 +11,8 @@ if (args.help || args.h) {
 }
 
 const root = process.cwd();
-const configPath = join(root, "wrangler.toml");
-const config = readFileSync(configPath, "utf8");
+const localVarsPath = join(root, ".dev.vars");
+const localVars = existsSync(localVarsPath) ? readFileSync(localVarsPath, "utf8") : "";
 const replyEmail = resolveReplyEmail(args);
 const fromName = args["from-name"] || "个人提醒助手";
 const fromEmail = args.from || `${fromName} <${replyEmail}>`;
@@ -20,24 +20,23 @@ const fromEmail = args.from || `${fromName} <${replyEmail}>`;
 validateEmail(replyEmail, "reply email");
 validateFromEmail(fromEmail);
 
-const nextConfig = config
-  .replace(/^FROM_EMAIL\s*=\s*".*"$/m, `FROM_EMAIL = "${escapeTomlString(fromEmail)}"`)
-  .replace(/^REPLY_EMAIL\s*=\s*".*"$/m, `REPLY_EMAIL = "${escapeTomlString(replyEmail)}"`);
-
-if (nextConfig === config) {
-  fail("Could not find FROM_EMAIL and REPLY_EMAIL in wrangler.toml");
-}
+const nextLocalVars = upsertDotEnvValues(localVars, {
+  FROM_EMAIL: fromEmail,
+  REPLY_EMAIL: replyEmail,
+});
 
 if (args["dry-run"]) {
-  console.log("Dry run. wrangler.toml would be updated with:");
-  console.log(`FROM_EMAIL = "${fromEmail}"`);
-  console.log(`REPLY_EMAIL = "${replyEmail}"`);
+  console.log("Dry run. .dev.vars would be updated with:");
+  console.log(`FROM_EMAIL=${formatDotEnvValue(fromEmail)}`);
+  console.log(`REPLY_EMAIL=${formatDotEnvValue(replyEmail)}`);
 } else {
-  writeFileSync(configPath, nextConfig);
-  console.log("Updated wrangler.toml email settings:");
-  console.log(`FROM_EMAIL = "${fromEmail}"`);
-  console.log(`REPLY_EMAIL = "${replyEmail}"`);
+  writeFileSync(localVarsPath, nextLocalVars);
+  console.log("Updated local .dev.vars email settings:");
+  console.log(`FROM_EMAIL=${formatDotEnvValue(fromEmail)}`);
+  console.log(`REPLY_EMAIL=${formatDotEnvValue(replyEmail)}`);
 }
+
+console.log("\nFor production, set FROM_EMAIL and REPLY_EMAIL as Worker variables in the Cloudflare dashboard.");
 
 function resolveReplyEmail(parsed) {
   if (parsed.reply && parsed.domain) {
@@ -94,8 +93,39 @@ function parseArgs(argv) {
   return parsed;
 }
 
-function escapeTomlString(value) {
-  return String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+function upsertDotEnvValues(text, updates) {
+  const keys = new Set(Object.keys(updates));
+  const seen = new Set();
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const output = [];
+
+  for (const line of lines) {
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+    if (match && keys.has(match[1])) {
+      const key = match[1];
+      seen.add(key);
+      output.push(`${key}=${formatDotEnvValue(updates[key])}`);
+    } else if (line.length > 0) {
+      output.push(line);
+    }
+  }
+
+  for (const [key, value] of Object.entries(updates)) {
+    if (!seen.has(key)) {
+      output.push(`${key}=${formatDotEnvValue(value)}`);
+    }
+  }
+
+  return `${output.join("\n")}\n`;
+}
+
+function formatDotEnvValue(value) {
+  const text = String(value);
+  if (/^[A-Za-z0-9_./:@+-]+$/.test(text)) {
+    return text;
+  }
+
+  return `"${text.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n")}"`;
 }
 
 function printHelp() {
@@ -110,7 +140,10 @@ Options:
   --reply        Reply-to email address.
   --from-name    Display name for FROM_EMAIL. Defaults to 个人提醒助手.
   --from         Full FROM_EMAIL value. Overrides --from-name.
-  --dry-run      Print the change without writing wrangler.toml.
+  --dry-run      Print the change without writing .dev.vars.
+
+This updates local .dev.vars only. For production, set FROM_EMAIL and
+REPLY_EMAIL as Worker variables in the Cloudflare dashboard.
 `);
 }
 

@@ -1,3 +1,7 @@
 ADMIN_TOKEN=replace-with-a-local-dev-token
 EMAIL_DELIVERY=log
 RESEND_API_KEY=unused-in-log-mode
+TIMEZONE=Asia/Shanghai
+FROM_EMAIL="Personal Reminder <reminder@example.com>"
+REPLY_EMAIL=reminder@example.com
+# HEARTBEAT_URL=https://example.com/ping/...

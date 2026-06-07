@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "wrangler deploy --config wrangler.local.toml",
+    "deploy:public-config": "wrangler deploy",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "check:readiness": "node scripts/check-readiness.mjs",
@@ -14,8 +15,8 @@
     "seed:make": "node scripts/make-seed.mjs",
     "d1:create": "wrangler d1 create personal-reminder",
     "d1:migrate:local": "wrangler d1 migrations apply personal-reminder --local",
-    "d1:migrate:remote": "wrangler d1 migrations apply personal-reminder --remote",
-    "tail": "wrangler tail"
+    "d1:migrate:remote": "wrangler d1 migrations apply personal-reminder --remote --config wrangler.local.toml",
+    "tail": "wrangler tail --config wrangler.local.toml"
   },
   "dependencies": {
     "postal-mime": "^2.6.1"
