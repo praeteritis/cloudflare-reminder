@@ -1,0 +1,3 @@
+ADMIN_TOKEN=replace-with-a-local-dev-token
+EMAIL_DELIVERY=log
+RESEND_API_KEY=unused-in-log-mode

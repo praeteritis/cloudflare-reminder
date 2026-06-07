@@ -1,0 +1,33 @@
+INSERT INTO tasks (
+  id,
+  recipient_email,
+  title,
+  body,
+  status,
+  timezone,
+  first_due_at_utc,
+  next_due_at_utc,
+  recurrence_type,
+  recurrence_interval_minutes,
+  recurrence_anchor,
+  nag_interval_minutes,
+  current_run_id,
+  created_at_utc,
+  updated_at_utc
+) VALUES (
+  'test-once',
+  '你的QQ邮箱@qq.com',
+  '测试提醒',
+  '这是一条 Cloudflare 测试提醒。',
+  'active',
+  'Asia/Shanghai',
+  '2026-06-07T12:00:00.000Z',
+  '2026-06-07T12:00:00.000Z',
+  'none',
+  NULL,
+  'scheduled_time',
+  5,
+  NULL,
+  '2026-06-07T11:58:00.000Z',
+  '2026-06-07T11:58:00.000Z'
+);

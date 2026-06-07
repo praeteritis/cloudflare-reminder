@@ -1,0 +1,22 @@
+name = "personal-mail-reminder"
+main = "src/index.ts"
+compatibility_date = "2026-06-07"
+workers_dev = true
+preview_urls = false
+
+routes = [
+  { pattern = "reminder.yang-cc.cc.cd", custom_domain = true },
+]
+
+[triggers]
+crons = ["* * * * *"]
+
+[vars]
+TIMEZONE = "Asia/Shanghai"
+FROM_EMAIL = "个人提醒助手 <reminder@yang-cc.cc.cd>"
+REPLY_EMAIL = "reminder@yang-cc.cc.cd"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "personal-reminder"
+database_id = "67d5cc57-2e79-4062-95e0-dcc08221ff23"

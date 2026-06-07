@@ -1,0 +1,33 @@
+INSERT INTO tasks (
+  id,
+  recipient_email,
+  title,
+  body,
+  status,
+  timezone,
+  first_due_at_utc,
+  next_due_at_utc,
+  recurrence_type,
+  recurrence_interval_minutes,
+  recurrence_anchor,
+  nag_interval_minutes,
+  current_run_id,
+  created_at_utc,
+  updated_at_utc
+) VALUES (
+  'test-daily',
+  '你的QQ邮箱@qq.com',
+  '每日测试提醒',
+  '这是一条每天重复的测试提醒。',
+  'active',
+  'Asia/Shanghai',
+  '2026-06-07T12:05:00.000Z',
+  '2026-06-07T12:05:00.000Z',
+  'interval',
+  1440,
+  'scheduled_time',
+  10,
+  NULL,
+  '2026-06-07T12:03:00.000Z',
+  '2026-06-07T12:03:00.000Z'
+);
