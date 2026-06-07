@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_PAGE_HTML, LOGIN_PAGE_HTML } from "./admin-page";
 import {
   buildTaskFromAdminInput,
+  buildTaskUpdateFromAdminInput,
   calculateNextNagAt,
   calculateNextDueAt,
   extractRunId,
@@ -206,12 +207,46 @@ describe("admin task input", () => {
       )
     ).toThrow("recipientEmail must be a valid email address");
   });
+
+  it("builds an update payload for an existing task", () => {
+    const update = buildTaskUpdateFromAdminInput(
+      {
+        recipientEmail: "new@example.com",
+        title: "更新后的提醒",
+        body: "新的正文",
+        dueAt: "2026-06-08 09:30",
+        nagIntervalMinutes: 60,
+        recurrence: {
+          type: "interval",
+          intervalMinutes: 2880,
+          anchor: "scheduled_time",
+        },
+      },
+      {
+        now: new Date("2026-06-07T12:00:00.000Z"),
+        timezone: "Asia/Shanghai",
+      }
+    );
+
+    expect(update).toMatchObject({
+      recipient_email: "new@example.com",
+      title: "更新后的提醒",
+      body: "新的正文",
+      next_due_at_utc: "2026-06-08T01:30:00.000Z",
+      recurrence_type: "interval",
+      recurrence_interval_minutes: 2880,
+      recurrence_anchor: "scheduled_time",
+      nag_interval_minutes: 60,
+    });
+  });
 });
 
 describe("admin page", () => {
   it("serves a management UI wired to the admin task API", () => {
     expect(ADMIN_PAGE_HTML).toContain('id="task-form"');
     expect(ADMIN_PAGE_HTML).toContain("/admin/tasks");
+    expect(ADMIN_PAGE_HTML).toContain("PATCH");
+    expect(ADMIN_PAGE_HTML).toContain('data-action="edit"');
     expect(ADMIN_PAGE_HTML).toContain("/auth/logout");
     expect(ADMIN_PAGE_HTML).toContain('id="relative-unit"');
     expect(ADMIN_PAGE_HTML).toContain('id="nag-unit"');

@@ -38,7 +38,7 @@ interface ReminderRun {
   id: string;
   task_id: string;
   due_at_utc: string;
-  status: "open" | "completed";
+  status: "open" | "completed" | "cancelled";
   sent_count: number;
   last_sent_at_utc: string | null;
   next_nag_at_utc: string | null;
@@ -57,10 +57,24 @@ interface TaskRunRow extends Task {
 }
 
 interface AdminTaskRow extends Task {
-  run_status: "open" | "completed" | null;
+  run_status: ReminderRun["status"] | null;
   run_sent_count: number | null;
   run_next_nag_at_utc: string | null;
   run_completed_at_utc: string | null;
+}
+
+interface TaskUpdateInput {
+  recipient_email: string;
+  title: string;
+  body: string;
+  timezone: string;
+  first_due_at_utc: string;
+  next_due_at_utc: string;
+  recurrence_type: RecurrenceType;
+  recurrence_interval_minutes: number | null;
+  recurrence_anchor: RecurrenceAnchor;
+  nag_interval_minutes: number;
+  updated_at_utc: string;
 }
 
 interface InboundEmailMessage {
@@ -152,6 +166,13 @@ export default {
           return Response.json({ ok: true, task: serializeTask(task) }, { status: 201 });
         }
 
+        const taskUpdateId = matchTaskUpdatePath(url.pathname);
+        if (taskUpdateId && request.method === "PATCH") {
+          const input = await readJsonBody(request);
+          const task = await updateTaskFromAdminInput(env, taskUpdateId, input);
+          return Response.json({ ok: true, task: serializeTask(task) });
+        }
+
         const statusAction = matchTaskStatusAction(url.pathname);
         if (statusAction && request.method === "POST") {
           const task = await setTaskStatus(env, statusAction.id, statusAction.status);
@@ -177,6 +198,7 @@ function healthPayload() {
       endpoints: [
         "GET /admin/tasks?status=all&limit=20",
         "POST /admin/tasks",
+        "PATCH /admin/tasks/<task_id>",
         "POST /admin/tasks/<task_id>/pause",
         "POST /admin/tasks/<task_id>/resume",
         "POST /admin/tasks/<task_id>/cancel",
@@ -538,6 +560,31 @@ export function buildTaskFromAdminInput(
   };
 }
 
+export function buildTaskUpdateFromAdminInput(
+  input: unknown,
+  options: { timezone?: string; now?: Date } = {}
+): TaskUpdateInput {
+  const parsed = buildTaskFromAdminInput(input, {
+    timezone: options.timezone,
+    now: options.now,
+    id: "task_update",
+  });
+
+  return {
+    recipient_email: parsed.recipient_email,
+    title: parsed.title,
+    body: parsed.body,
+    timezone: parsed.timezone,
+    first_due_at_utc: parsed.first_due_at_utc,
+    next_due_at_utc: parsed.next_due_at_utc,
+    recurrence_type: parsed.recurrence_type,
+    recurrence_interval_minutes: parsed.recurrence_interval_minutes,
+    recurrence_anchor: parsed.recurrence_anchor,
+    nag_interval_minutes: parsed.nag_interval_minutes,
+    updated_at_utc: parsed.updated_at_utc,
+  };
+}
+
 async function sendEmail(
   env: Env,
   input: {
@@ -790,6 +837,81 @@ async function setTaskStatus(env: Env, id: string, status: TaskStatus): Promise<
   }
 
   return task;
+}
+
+async function updateTaskFromAdminInput(env: Env, id: string, input: unknown): Promise<Task> {
+  if (!isValidTaskId(id)) {
+    throw new AdminInputError("Task not found", 404);
+  }
+
+  const existing = await env.DB.prepare(`SELECT * FROM tasks WHERE id = ? LIMIT 1`).bind(id).first<Task>();
+  if (!existing) {
+    throw new AdminInputError("Task not found", 404);
+  }
+
+  const update = buildTaskUpdateFromAdminInput(input, {
+    timezone: env.TIMEZONE,
+    now: new Date(),
+  });
+  const statements: D1PreparedStatement[] = [];
+
+  if (existing.current_run_id) {
+    statements.push(
+      env.DB.prepare(
+        `UPDATE reminder_runs
+         SET status = 'cancelled',
+             next_nag_at_utc = NULL,
+             updated_at_utc = ?
+         WHERE id = ? AND status = 'open'`
+      ).bind(update.updated_at_utc, existing.current_run_id)
+    );
+  }
+
+  statements.push(
+    env.DB.prepare(
+      `UPDATE tasks
+       SET recipient_email = ?,
+           title = ?,
+           body = ?,
+           timezone = ?,
+           first_due_at_utc = ?,
+           next_due_at_utc = ?,
+           recurrence_type = ?,
+           recurrence_interval_minutes = ?,
+           recurrence_anchor = ?,
+           nag_interval_minutes = ?,
+           current_run_id = NULL,
+           updated_at_utc = ?
+       WHERE id = ?`
+    ).bind(
+      update.recipient_email,
+      update.title,
+      update.body,
+      update.timezone,
+      update.first_due_at_utc,
+      update.next_due_at_utc,
+      update.recurrence_type,
+      update.recurrence_interval_minutes,
+      update.recurrence_anchor,
+      update.nag_interval_minutes,
+      update.updated_at_utc,
+      id
+    )
+  );
+
+  await env.DB.batch(statements);
+
+  const task = await env.DB.prepare(`SELECT * FROM tasks WHERE id = ? LIMIT 1`).bind(id).first<Task>();
+  if (!task) {
+    throw new AdminInputError("Task not found", 404);
+  }
+
+  return task;
+}
+
+function matchTaskUpdatePath(pathname: string): string | null {
+  const match = pathname.match(/^\/admin\/tasks\/([^/]+)$/);
+  return match ? decodeURIComponent(match[1]) : null;
 }
 
 function matchTaskStatusAction(pathname: string): { id: string; status: TaskStatus } | null {

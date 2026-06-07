@@ -886,7 +886,7 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
       <div class="stack">
         <section class="panel">
           <div class="panel-head">
-            <h2 class="panel-title">新建提醒</h2>
+            <h2 id="form-title" class="panel-title">新建提醒</h2>
           </div>
 
           <form id="task-form" class="form">
@@ -980,7 +980,7 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
             </div>
 
             <div class="actions">
-              <button class="primary" type="submit">创建提醒</button>
+              <button id="submit-task" class="primary" type="submit">创建提醒</button>
               <button id="reset-form" class="quiet" type="button">清空</button>
             </div>
           </form>
@@ -1044,9 +1044,12 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
   <script>
     (function () {
       var form = document.getElementById('task-form');
+      var formTitle = document.getElementById('form-title');
       var notice = document.getElementById('notice');
       var tasksEl = document.getElementById('tasks');
       var statusEl = document.getElementById('service-status');
+      var submitTask = document.getElementById('submit-task');
+      var resetForm = document.getElementById('reset-form');
       var modeRelative = document.getElementById('mode-relative');
       var modeAbsolute = document.getElementById('mode-absolute');
       var relativeFields = document.getElementById('relative-fields');
@@ -1061,6 +1064,8 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
       var repeatUnit = document.getElementById('repeat-unit');
       var filterStatus = 'all';
       var dueMode = 'relative';
+      var editingTaskId = null;
+      var taskById = {};
       var nagTouched = false;
       var repeatTouched = false;
 
@@ -1085,13 +1090,8 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
         }
       });
 
-      document.getElementById('reset-form').addEventListener('click', function () {
-        form.reset();
-        nagTouched = false;
-        repeatTouched = false;
-        setDueMode('relative');
-        repeatFields.classList.add('hidden');
-        syncRelativeDefaults();
+      resetForm.addEventListener('click', function () {
+        resetEditor();
       });
 
       [relativeAmount, relativeUnit].forEach(function (control) {
@@ -1143,19 +1143,18 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
       form.addEventListener('submit', function (event) {
         event.preventDefault();
         var payload = buildPayload();
-        callApi('/admin/tasks', {
-          method: 'POST',
+        var isEditing = Boolean(editingTaskId);
+        var path = isEditing
+          ? '/admin/tasks/' + encodeURIComponent(editingTaskId)
+          : '/admin/tasks';
+        callApi(path, {
+          method: isEditing ? 'PATCH' : 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         })
           .then(function () {
-            flash('ok', '提醒已创建');
-            form.reset();
-            nagTouched = false;
-            repeatTouched = false;
-            setDueMode('relative');
-            repeatFields.classList.add('hidden');
-            syncRelativeDefaults();
+            flash('ok', isEditing ? '提醒已保存' : '提醒已创建');
+            resetEditor();
             loadTasks();
           })
           .catch(showError);
@@ -1173,6 +1172,11 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
           return;
         }
 
+        if (action === 'edit') {
+          beginEdit(taskId);
+          return;
+        }
+
         callApi('/admin/tasks/' + encodeURIComponent(taskId) + '/' + action, { method: 'POST' })
           .then(function () {
             flash('ok', '任务已更新');
@@ -1183,6 +1187,55 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
 
       loadTasks();
       syncRelativeDefaults();
+
+      function resetEditor() {
+        form.reset();
+        editingTaskId = null;
+        nagTouched = false;
+        repeatTouched = false;
+        setDueMode('relative');
+        repeatFields.classList.add('hidden');
+        updateFormMode();
+        syncRelativeDefaults();
+      }
+
+      function updateFormMode() {
+        var isEditing = Boolean(editingTaskId);
+        formTitle.textContent = isEditing ? '编辑提醒' : '新建提醒';
+        submitTask.textContent = isEditing ? '保存修改' : '创建提醒';
+        resetForm.textContent = isEditing ? '取消编辑' : '清空';
+      }
+
+      function beginEdit(taskId) {
+        var task = taskById[taskId];
+        if (!task) {
+          flash('error', '找不到要编辑的任务');
+          return;
+        }
+
+        editingTaskId = task.id;
+        updateFormMode();
+
+        document.getElementById('recipient-email').value = task.recipientEmail || '';
+        document.getElementById('task-title').value = task.title || '';
+        document.getElementById('task-body').value = task.body || '';
+        document.getElementById('due-at').value = toDateTimeLocalValue(task.nextDueAtUtc);
+        setDueMode('absolute');
+        setDurationMinutes('nag-amount-absolute', 'nag-unit-absolute', task.nagIntervalMinutes, false);
+
+        var hasRepeat = task.recurrenceType === 'interval' && task.recurrenceIntervalMinutes;
+        repeatEnabled.checked = Boolean(hasRepeat);
+        repeatFields.classList.toggle('hidden', !hasRepeat);
+        if (hasRepeat) {
+          setDurationMinutes('repeat-amount', 'repeat-unit', task.recurrenceIntervalMinutes, true);
+          document.getElementById('repeat-anchor').value = task.recurrenceAnchor || 'scheduled_time';
+        }
+
+        nagTouched = true;
+        repeatTouched = true;
+        flash('ok', '正在编辑：' + task.title);
+        form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
 
       function setDueMode(nextMode) {
         dueMode = nextMode;
@@ -1267,6 +1320,31 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
         repeatUnit.value = relativeUnit.value;
       }
 
+      function setDurationMinutes(amountId, unitId, minutes, allowDay) {
+        var value = Number(minutes || 1);
+        var unit = 'minute';
+        if (allowDay && value % 1440 === 0) {
+          value = value / 1440;
+          unit = 'day';
+        } else if (value % 60 === 0) {
+          value = value / 60;
+          unit = 'hour';
+        }
+
+        document.getElementById(amountId).value = String(value);
+        document.getElementById(unitId).value = unit;
+      }
+
+      function toDateTimeLocalValue(value) {
+        var date = new Date(value);
+        if (Number.isNaN(date.getTime())) {
+          return '';
+        }
+
+        var local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+        return local.toISOString().slice(0, 16);
+      }
+
       function callApi(path, options) {
         options = options || {};
         var headers = new Headers(options.headers || {});
@@ -1302,10 +1380,15 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
 
       function renderTasks(tasks) {
         if (!tasks.length) {
+          taskById = {};
           tasksEl.innerHTML = '<div class="empty">暂无任务</div>';
           return;
         }
 
+        taskById = {};
+        tasks.forEach(function (task) {
+          taskById[task.id] = task;
+        });
         tasksEl.innerHTML = tasks.map(renderTask).join('');
       }
 
@@ -1338,15 +1421,19 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
 
       function renderActions(task) {
         var id = escapeAttribute(task.id);
+        var edit = '<button class="quiet" type="button" data-action="edit" data-task-id="' + id + '">编辑</button>';
         if (task.status === 'active') {
-          return '<button class="quiet" type="button" data-action="pause" data-task-id="' + id + '">暂停</button>' +
+          return edit +
+            '<button class="quiet" type="button" data-action="pause" data-task-id="' + id + '">暂停</button>' +
             '<button class="danger" type="button" data-action="cancel" data-task-id="' + id + '">取消</button>';
         }
         if (task.status === 'paused') {
-          return '<button class="primary" type="button" data-action="resume" data-task-id="' + id + '">恢复</button>' +
+          return edit +
+            '<button class="primary" type="button" data-action="resume" data-task-id="' + id + '">恢复</button>' +
             '<button class="danger" type="button" data-action="cancel" data-task-id="' + id + '">取消</button>';
         }
-        return '<button class="quiet" type="button" data-action="resume" data-task-id="' + id + '">重新激活</button>';
+        return edit +
+          '<button class="quiet" type="button" data-action="resume" data-task-id="' + id + '">重新激活</button>';
       }
 
       function statusLabel(status) {
