@@ -395,7 +395,7 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
 
     .tokenbar {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: 1fr auto auto;
       gap: 8px;
       align-items: end;
     }
@@ -426,6 +426,37 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
       accent-color: var(--teal);
     }
 
+    .github-link {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: var(--surface);
+      color: var(--ink);
+      text-decoration: none;
+      transition: transform 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+    }
+
+    .github-link:hover {
+      border-color: var(--ink);
+      transform: translateY(-1px);
+    }
+
+    .github-link:focus-visible {
+      outline: none;
+      border-color: var(--teal);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.13);
+    }
+
+    .github-link svg {
+      width: 18px;
+      height: 18px;
+      display: block;
+      fill: currentColor;
+    }
+
     .main {
       display: grid;
       grid-template-columns: minmax(320px, 430px) minmax(0, 1fr);
@@ -433,6 +464,13 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
       width: min(1480px, 100%);
       margin: 0 auto;
       padding: 18px clamp(14px, 3vw, 34px) 34px;
+    }
+
+    .stack {
+      display: grid;
+      align-content: start;
+      gap: 18px;
+      min-width: 0;
     }
 
     .panel {
@@ -522,6 +560,81 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
       gap: 9px;
       align-items: center;
       flex-wrap: wrap;
+    }
+
+    .guide {
+      display: grid;
+      gap: 14px;
+      padding: 16px;
+    }
+
+    .guide-list {
+      display: grid;
+      gap: 12px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .guide-list li {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+    }
+
+    .guide-index {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(15, 118, 110, 0.35);
+      border-radius: 7px;
+      background: var(--teal-soft);
+      color: var(--teal);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .guide-title {
+      margin: 0 0 3px;
+      font-size: 14px;
+      font-weight: 850;
+      color: var(--ink);
+      line-height: 1.25;
+    }
+
+    .guide-text {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+
+    .guide-note {
+      margin: 0;
+      padding: 11px 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafc;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .reply-code {
+      display: inline-grid;
+      place-items: center;
+      min-width: 24px;
+      min-height: 22px;
+      padding: 0 6px;
+      border: 1px solid var(--line-strong);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      font-weight: 800;
     }
 
     .primary {
@@ -721,7 +834,7 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
       }
 
       .tokenbar {
-        grid-template-columns: 1fr auto;
+        grid-template-columns: 1fr auto auto;
       }
 
       .remember {
@@ -760,112 +873,151 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
 
       <div class="tokenbar">
         <div class="account-status">session verified</div>
+        <a class="github-link" href="https://github.com/maya1900/cloudflare-reminder" target="_blank" rel="noreferrer" aria-label="打开 GitHub 仓库" title="GitHub 仓库">
+          <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.54 2.86 8.39 6.84 9.75.5.09.68-.22.68-.49 0-.24-.01-1.05-.01-1.9-2.78.62-3.37-1.22-3.37-1.22-.45-1.19-1.11-1.51-1.11-1.51-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05A9.35 9.35 0 0 1 12 6.98c.85 0 1.71.12 2.51.34 1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.8-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.81 0 .27.18.59.69.49A10.11 10.11 0 0 0 22 12.26C22 6.58 17.52 2 12 2Z" />
+          </svg>
+        </a>
         <button id="logout" class="quiet" type="button">退出</button>
       </div>
     </header>
 
     <main class="main">
-      <section class="panel">
-        <div class="panel-head">
-          <h2 class="panel-title">新建提醒</h2>
-        </div>
-
-        <form id="task-form" class="form">
-          <div id="notice" class="notice" role="status"></div>
-
-          <label>
-            收件邮箱
-            <input id="recipient-email" type="email" autocomplete="email" required placeholder="you@example.com">
-          </label>
-
-          <label>
-            标题
-            <input id="task-title" type="text" required maxlength="120" placeholder="每日复盘">
-          </label>
-
-          <label>
-            正文
-            <textarea id="task-body" maxlength="1200" placeholder="写下今天完成的 3 件事。"></textarea>
-          </label>
-
-          <div class="segmented" aria-label="到期方式">
-            <button id="mode-relative" type="button" aria-pressed="true">相对时间</button>
-            <button id="mode-absolute" type="button" aria-pressed="false">指定时间</button>
+      <div class="stack">
+        <section class="panel">
+          <div class="panel-head">
+            <h2 class="panel-title">新建提醒</h2>
           </div>
 
-          <div id="relative-fields" class="grid-2">
+          <form id="task-form" class="form">
+            <div id="notice" class="notice" role="status"></div>
+
             <label>
-              多久后
-              <span class="duration">
-                <input id="relative-amount" type="number" min="1" step="1" value="15">
-                <select id="relative-unit">
-                  <option value="minute">分钟</option>
-                  <option value="hour">小时</option>
-                  <option value="day">天</option>
+              收件邮箱
+              <input id="recipient-email" type="email" autocomplete="email" required placeholder="you@example.com">
+            </label>
+
+            <label>
+              标题
+              <input id="task-title" type="text" required maxlength="120" placeholder="每日复盘">
+            </label>
+
+            <label>
+              正文
+              <textarea id="task-body" maxlength="1200" placeholder="写下今天完成的 3 件事。"></textarea>
+            </label>
+
+            <div class="segmented" aria-label="到期方式">
+              <button id="mode-relative" type="button" aria-pressed="true">相对时间</button>
+              <button id="mode-absolute" type="button" aria-pressed="false">指定时间</button>
+            </div>
+
+            <div id="relative-fields" class="grid-2">
+              <label>
+                多久后
+                <span class="duration">
+                  <input id="relative-amount" type="number" min="1" step="1" value="15">
+                  <select id="relative-unit">
+                    <option value="minute">分钟</option>
+                    <option value="hour">小时</option>
+                    <option value="day">天</option>
+                  </select>
+                </span>
+              </label>
+              <label>
+                追提醒间隔
+                <span class="duration">
+                  <input id="nag-amount" type="number" min="1" step="1" value="15">
+                  <select id="nag-unit">
+                    <option value="minute">分钟</option>
+                    <option value="hour">小时</option>
+                  </select>
+                </span>
+              </label>
+            </div>
+
+            <div id="absolute-fields" class="grid-2 hidden">
+              <label>
+                到期时间
+                <input id="due-at" type="datetime-local">
+              </label>
+              <label>
+                追提醒间隔
+                <span class="duration">
+                  <input id="nag-amount-absolute" type="number" min="1" step="1" value="30">
+                  <select id="nag-unit-absolute">
+                    <option value="minute">分钟</option>
+                    <option value="hour">小时</option>
+                  </select>
+                </span>
+              </label>
+            </div>
+
+            <label class="checkline">
+              <input id="repeat-enabled" type="checkbox">
+              重复提醒
+            </label>
+
+            <div id="repeat-fields" class="grid-2 hidden">
+              <label>
+                重复间隔
+                <span class="duration">
+                  <input id="repeat-amount" type="number" min="1" step="1" value="15">
+                  <select id="repeat-unit">
+                    <option value="minute">分钟</option>
+                    <option value="hour">小时</option>
+                    <option value="day">天</option>
+                  </select>
+                </span>
+              </label>
+              <label>
+                重复基准
+                <select id="repeat-anchor">
+                  <option value="scheduled_time">计划时间</option>
+                  <option value="completion_time">完成时间</option>
                 </select>
-              </span>
-            </label>
-            <label>
-              追提醒间隔
-              <span class="duration">
-                <input id="nag-amount" type="number" min="1" step="1" value="15">
-                <select id="nag-unit">
-                  <option value="minute">分钟</option>
-                  <option value="hour">小时</option>
-                </select>
-              </span>
-            </label>
-          </div>
+              </label>
+            </div>
 
-          <div id="absolute-fields" class="grid-2 hidden">
-            <label>
-              到期时间
-              <input id="due-at" type="datetime-local">
-            </label>
-            <label>
-              追提醒间隔
-              <span class="duration">
-                <input id="nag-amount-absolute" type="number" min="1" step="1" value="30">
-                <select id="nag-unit-absolute">
-                  <option value="minute">分钟</option>
-                  <option value="hour">小时</option>
-                </select>
-              </span>
-            </label>
-          </div>
+            <div class="actions">
+              <button class="primary" type="submit">创建提醒</button>
+              <button id="reset-form" class="quiet" type="button">清空</button>
+            </div>
+          </form>
+        </section>
 
-          <label class="checkline">
-            <input id="repeat-enabled" type="checkbox">
-            重复提醒
-          </label>
-
-          <div id="repeat-fields" class="grid-2 hidden">
-            <label>
-              重复间隔
-              <span class="duration">
-                <input id="repeat-amount" type="number" min="1" step="1" value="15">
-                <select id="repeat-unit">
-                  <option value="minute">分钟</option>
-                  <option value="hour">小时</option>
-                  <option value="day">天</option>
-                </select>
-              </span>
-            </label>
-            <label>
-              重复基准
-              <select id="repeat-anchor">
-                <option value="scheduled_time">计划时间</option>
-                <option value="completion_time">完成时间</option>
-              </select>
-            </label>
+        <section class="panel" aria-labelledby="guide-title">
+          <div class="panel-head">
+            <h2 id="guide-title" class="panel-title">使用说明</h2>
           </div>
-
-          <div class="actions">
-            <button class="primary" type="submit">创建提醒</button>
-            <button id="reset-form" class="quiet" type="button">清空</button>
+          <div class="guide">
+            <ol class="guide-list">
+              <li>
+                <span class="guide-index">1</span>
+                <div>
+                  <p class="guide-title">创建提醒</p>
+                  <p class="guide-text">填写收件邮箱、标题、正文和到期时间；追提醒间隔决定未完成时多久再发一次邮件。</p>
+                </div>
+              </li>
+              <li>
+                <span class="guide-index">2</span>
+                <div>
+                  <p class="guide-title">收到邮件</p>
+                  <p class="guide-text">系统每分钟检查到期任务。邮件主题里的运行编号会自动用于识别回复。</p>
+                </div>
+              </li>
+              <li>
+                <span class="guide-index">3</span>
+                <div>
+                  <p class="guide-title">回复完成</p>
+                  <p class="guide-text">直接回复提醒邮件，正文第一行只写 <span class="reply-code">1</span>，本次提醒会被标记完成。</p>
+                </div>
+              </li>
+            </ol>
+            <p class="guide-note">重复提醒按“计划时间”会保持固定节奏；按“完成时间”会从你回复完成后重新计时。</p>
           </div>
-        </form>
-      </section>
+        </section>
+      </div>
 
       <section class="panel">
         <div class="toolbar">
