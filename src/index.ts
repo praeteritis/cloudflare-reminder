@@ -77,6 +77,7 @@ interface ProcessingSummary {
 const RUN_ID_PATTERN = /\[R:(run_[A-Za-z0-9_-]+)\]/;
 const DEFAULT_TIMEZONE = "Asia/Shanghai";
 const DEFAULT_NAG_INTERVAL_MINUTES = 1440;
+const FAILED_SEND_RETRY_MINUTES = 1;
 const MAX_LIST_LIMIT = 100;
 const ADMIN_SESSION_COOKIE = "reminder_admin";
 const SESSION_MAX_AGE_SECONDS = 12 * 60 * 60;
@@ -271,8 +272,8 @@ async function sendReminderAndUpdateRun(
   sentAt: Date
 ): Promise<void> {
   const sentAtIso = sentAt.toISOString();
-  const nextNagAt = addMinutes(sentAt, task.nag_interval_minutes).toISOString();
   const success = await sendReminderEmail(env, task, runId, type);
+  const nextNagAt = calculateNextNagAt(task, sentAt, success).toISOString();
 
   await env.DB.prepare(
     `UPDATE reminder_runs
@@ -284,6 +285,10 @@ async function sendReminderAndUpdateRun(
   )
     .bind(success ? 1 : 0, success ? 1 : 0, sentAtIso, nextNagAt, sentAtIso, runId)
     .run();
+}
+
+export function calculateNextNagAt(task: Pick<Task, "nag_interval_minutes">, sentAt: Date, success: boolean): Date {
+  return addMinutes(sentAt, success ? task.nag_interval_minutes : FAILED_SEND_RETRY_MINUTES);
 }
 
 async function sendReminderEmail(

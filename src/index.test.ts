@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ADMIN_PAGE_HTML, LOGIN_PAGE_HTML } from "./admin-page";
 import {
   buildTaskFromAdminInput,
+  calculateNextNagAt,
   calculateNextDueAt,
   extractRunId,
   formatInTimezone,
@@ -74,6 +75,28 @@ describe("recurrence calculation", () => {
     );
 
     expect(next?.toISOString()).toBe("2026-06-07T05:00:00.000Z");
+  });
+});
+
+describe("nag retry scheduling", () => {
+  it("uses the full nag interval after a successful send", () => {
+    const next = calculateNextNagAt(
+      makeTask({ nag_interval_minutes: 1440 }),
+      new Date("2026-06-07T12:00:00.000Z"),
+      true
+    );
+
+    expect(next.toISOString()).toBe("2026-06-08T12:00:00.000Z");
+  });
+
+  it("retries after one minute when sending fails", () => {
+    const next = calculateNextNagAt(
+      makeTask({ nag_interval_minutes: 1440 }),
+      new Date("2026-06-07T12:00:00.000Z"),
+      false
+    );
+
+    expect(next.toISOString()).toBe("2026-06-07T12:01:00.000Z");
   });
 });
 
