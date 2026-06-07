@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ADMIN_PAGE_HTML, LOGIN_PAGE_HTML } from "./admin-page";
 import {
   buildTaskFromAdminInput,
@@ -7,7 +7,12 @@ import {
   extractRunId,
   formatInTimezone,
   getFirstMeaningfulLine,
+  pingHeartbeat,
 } from "./index";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function makeTask(overrides: Record<string, unknown> = {}) {
   return {
@@ -97,6 +102,32 @@ describe("nag retry scheduling", () => {
     );
 
     expect(next.toISOString()).toBe("2026-06-07T12:01:00.000Z");
+  });
+});
+
+describe("cron heartbeat", () => {
+  it("pings the configured heartbeat URL with processing summary", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await pingHeartbeat(
+      { HEARTBEAT_URL: "https://hc-ping.com/check-id" },
+      { createdRuns: 2, nagReminders: 3 }
+    );
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toBe("https://hc-ping.com/check-id?createdRuns=2&nagReminders=3");
+    expect(init).toMatchObject({ method: "GET" });
+  });
+
+  it("does nothing when no heartbeat URL is configured", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await pingHeartbeat({}, { createdRuns: 0, nagReminders: 0 });
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

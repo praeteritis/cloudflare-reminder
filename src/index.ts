@@ -13,6 +13,7 @@ interface Env {
   REPLY_EMAIL: string;
   ADMIN_TOKEN?: string;
   EMAIL_DELIVERY?: "resend" | "log";
+  HEARTBEAT_URL?: string;
 }
 
 interface Task {
@@ -85,7 +86,7 @@ const REMEMBER_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 
 export default {
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(processDueReminders(env));
+    ctx.waitUntil(processDueReminders(env).then((summary) => pingHeartbeat(env, summary)));
   },
 
   async email(message: InboundEmailMessage, env: Env, ctx: ExecutionContext) {
@@ -193,6 +194,41 @@ async function processDueReminders(env: Env): Promise<ProcessingSummary> {
   const nagReminders = await sendDueNagReminders(env, now, nowIso);
 
   return { createdRuns, nagReminders };
+}
+
+export async function pingHeartbeat(env: Pick<Env, "HEARTBEAT_URL">, summary: ProcessingSummary): Promise<void> {
+  if (!env.HEARTBEAT_URL) {
+    return;
+  }
+
+  try {
+    const url = new URL(env.HEARTBEAT_URL);
+    url.searchParams.set("createdRuns", String(summary.createdRuns));
+    url.searchParams.set("nagReminders", String(summary.nagReminders));
+
+    const response = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        "User-Agent": "personal-mail-reminder/heartbeat",
+      },
+    });
+
+    if (!response.ok) {
+      console.warn(
+        JSON.stringify({
+          event: "heartbeat_failed",
+          status: response.status,
+        })
+      );
+    }
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        event: "heartbeat_error",
+        error: error instanceof Error ? error.message : String(error),
+      })
+    );
+  }
 }
 
 async function createRunsForDueTasks(env: Env, now: Date, nowIso: string): Promise<number> {

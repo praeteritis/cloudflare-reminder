@@ -80,6 +80,14 @@ npx wrangler secret put RESEND_API_KEY
 
 `ADMIN_TOKEN` 用于登录管理台；`RESEND_API_KEY` 用于调用 Resend 发信。不要把它们写进源码或 `wrangler.toml`。
 
+如果需要监控 Cron 是否持续运行，可以在 Healthchecks.io、UptimeRobot 或 Better Stack 创建一个 heartbeat/ping 监控，并把 ping URL 设置为 Worker secret：
+
+```bash
+npx wrangler secret put HEARTBEAT_URL
+```
+
+Cron 每次成功跑完后会主动请求这个 URL。建议外部监控设置为超过 5 到 10 分钟未收到 ping 就报警。
+
 ### 5. 配置邮件服务
 
 在 Resend 中验证发信域名，确保 `FROM_EMAIL` 使用已验证的域名。
@@ -180,4 +188,3 @@ wrangler.toml             Cloudflare Worker 配置
 ## 许可证
 
 MIT。详见 [LICENSE](./LICENSE)。
-
