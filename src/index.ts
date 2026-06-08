@@ -194,7 +194,7 @@ const MAX_LIST_LIMIT = 100;
 const DUE_SCAN_LIMIT = 250;
 const NAG_SCAN_LIMIT = 250;
 const SCHEDULER_MAX_LOOPS = 6;
-const DELIVERY_ENQUEUE_LIMIT = 1000;
+const DELIVERY_ENQUEUE_LIMIT = 500;
 const DELIVERY_QUEUE_BATCH_SIZE = 100;
 const DELIVERY_RETRY_BASE_SECONDS = 60;
 const DELIVERY_RETRY_MAX_SECONDS = 30 * 60;
@@ -209,10 +209,16 @@ const SESSION_MAX_AGE_SECONDS = 12 * 60 * 60;
 const REMEMBER_SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
 const PASSWORD_MIN_LENGTH = 8;
 const PASSWORD_HASH_ITERATIONS = 100_000;
+const TASK_TITLE_MAX_CHARS = 20;
+const TASK_BODY_MAX_CHARS = 200;
+const TASK_TIMEZONE_MAX_CHARS = 64;
+const TASK_MAX_INTERVAL_MINUTES = 366 * 24 * 60;
 const LINUXDO_AUTHORIZE_URL = "https://connect.linux.do/oauth2/authorize";
 const LINUXDO_TOKEN_URL = "https://connect.linux.do/oauth2/token";
 const LINUXDO_USER_URL = "https://connect.linux.do/api/user";
 const LOG_RETENTION_DAYS = 30;
+const MAX_JSON_BODY_BYTES = 1024 * 1024;
+const MAX_PROVIDER_RESPONSE_BYTES = 16 * 1024;
 
 export default {
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
@@ -780,42 +786,44 @@ async function createRunsForDueTasks(env: Env, now: Date, nowIso: string): Promi
 
   for (const task of tasks) {
     const runId = makeId("run");
-    await env.DB.prepare(
-      `INSERT INTO reminder_runs (
-         id,
-         task_id,
-         due_at_utc,
-         status,
-         sent_count,
-         next_nag_at_utc,
-         created_at_utc,
-         updated_at_utc
-       ) VALUES (?, ?, ?, 'open', 0, NULL, ?, ?)`
-    )
-      .bind(runId, task.id, task.next_due_at_utc, nowIso, nowIso)
-      .run();
+    const [acquireResult, insertRunResult] = await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE tasks
+         SET current_run_id = ?, updated_at_utc = ?
+         WHERE id = ?
+           AND status = 'active'
+           AND deleted_at_utc IS NULL
+           AND next_due_at_utc <= ?
+           AND (current_run_id IS NULL OR current_run_id = '')`
+      ).bind(runId, nowIso, task.id, nowIso),
+      env.DB.prepare(
+        `INSERT INTO reminder_runs (
+           id,
+           task_id,
+           due_at_utc,
+           status,
+           sent_count,
+           next_nag_at_utc,
+           created_at_utc,
+           updated_at_utc
+         )
+         SELECT ?, id, next_due_at_utc, 'open', 0, NULL, ?, ?
+         FROM tasks
+         WHERE id = ?
+           AND current_run_id = ?
+           AND status = 'active'
+           AND deleted_at_utc IS NULL
+           AND next_due_at_utc <= ?`
+      ).bind(runId, nowIso, nowIso, task.id, runId, nowIso),
+    ]);
 
-    const acquireResult = await env.DB.prepare(
-      `UPDATE tasks
-       SET current_run_id = ?, updated_at_utc = ?
-       WHERE id = ?
-         AND status = 'active'
-         AND deleted_at_utc IS NULL
-         AND next_due_at_utc <= ?
-         AND (current_run_id IS NULL OR current_run_id = '')`
-    )
-      .bind(runId, nowIso, task.id, nowIso)
-      .run();
-
-    if (acquireResult.meta.changes === 0) {
+    if (acquireResult.meta.changes === 0 || insertRunResult.meta.changes === 0) {
       await env.DB.prepare(
-        `UPDATE reminder_runs
-         SET status = 'cancelled',
-             next_nag_at_utc = NULL,
-             updated_at_utc = ?
-         WHERE id = ? AND status = 'open'`
+        `UPDATE tasks
+         SET current_run_id = NULL, updated_at_utc = ?
+         WHERE id = ? AND current_run_id = ?`
       )
-        .bind(nowIso, runId)
+        .bind(nowIso, task.id, runId)
         .run();
       continue;
     }
@@ -1288,6 +1296,7 @@ export async function markDeadLetteredDeliveryMessages(
   messages: readonly Message<ReminderDeliveryMessage>[]
 ): Promise<void> {
   const nowIso = new Date().toISOString();
+  let deadLetteredCount = 0;
   for (const message of messages) {
     if (!isReminderDeliveryMessage(message.body)) {
       continue;
@@ -1303,8 +1312,18 @@ export async function markDeadLetteredDeliveryMessages(
     )
       .bind(`dead letter queue after ${message.attempts} attempts`, nowIso, message.body.deliveryKey)
       .run();
+    deadLetteredCount += 1;
 
     await closeRunAfterDeadLetteredDelivery(env, message.body, message.attempts, nowIso);
+  }
+
+  if (deadLetteredCount > 0) {
+    console.warn(
+      JSON.stringify({
+        event: "delivery_dead_lettered",
+        count: deadLetteredCount,
+      })
+    );
   }
 }
 
@@ -1617,6 +1636,13 @@ export function buildTaskFromAdminInput(
   if (!isValidEmail(recipientEmail)) {
     throw new AdminInputError("recipientEmail must be a valid email address");
   }
+  assertMaxCharacters(title, TASK_TITLE_MAX_CHARS, "title");
+  assertMaxCharacters(body, TASK_BODY_MAX_CHARS, "body");
+  assertMaxCharacters(timezone, TASK_TIMEZONE_MAX_CHARS, "timezone");
+  assertMaxInteger(nagIntervalMinutes, TASK_MAX_INTERVAL_MINUTES, "nagIntervalMinutes");
+  if (recurrenceIntervalMinutes !== null) {
+    assertMaxInteger(recurrenceIntervalMinutes, TASK_MAX_INTERVAL_MINUTES, "recurrence.intervalMinutes");
+  }
 
   return {
     id,
@@ -1707,9 +1733,17 @@ async function sendEmail(
         }),
       });
 
-      const responseText = await response.text();
+      const responseText = await readLimitedText(response, MAX_PROVIDER_RESPONSE_BYTES, "Email provider response is too large");
       if (!response.ok) {
-        throw new Error(`Resend ${response.status}: ${responseText}`);
+        const responsePayload = safeJsonParse(responseText) as { message?: string; name?: string } | null;
+        console.warn(
+          JSON.stringify({
+            event: "resend_send_failed",
+            status: response.status,
+            error: responsePayload?.message ?? responsePayload?.name ?? responseText.slice(0, 200),
+          })
+        );
+        throw new Error(`Email provider rejected request with status ${response.status}`);
       }
 
       const payload = safeJsonParse(responseText) as { id?: string } | null;
@@ -2070,14 +2104,66 @@ function safeJsonParse(text: string): unknown {
   }
 }
 
+async function readLimitedText(source: Request | Response, maxBytes: number, tooLargeMessage: string): Promise<string> {
+  const contentLength = source.headers.get("content-length");
+  if (contentLength) {
+    const parsedLength = Number(contentLength);
+    if (Number.isFinite(parsedLength) && parsedLength > maxBytes) {
+      throw new AdminInputError(tooLargeMessage, 413);
+    }
+  }
+
+  if (!source.body) {
+    return "";
+  }
+
+  const reader = source.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (!value) {
+        continue;
+      }
+
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        throw new AdminInputError(tooLargeMessage, 413);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const combined = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return new TextDecoder().decode(combined);
+}
+
 async function readJsonBody(request: Request): Promise<unknown> {
   const contentType = request.headers.get("content-type") || "";
   if (!contentType.toLowerCase().includes("application/json")) {
     throw new AdminInputError("Content-Type must be application/json");
   }
 
+  const bodyText = await readLimitedText(request, MAX_JSON_BODY_BYTES, "Request body is too large");
+  if (!bodyText.trim()) {
+    throw new AdminInputError("Request body must be valid JSON");
+  }
+
   try {
-    return await request.json();
+    return JSON.parse(bodyText);
   } catch {
     throw new AdminInputError("Request body must be valid JSON");
   }
@@ -2850,22 +2936,27 @@ async function deleteInviteCodesFromInput(env: Env, input: unknown) {
   if (codes.length > 100) {
     throw new AdminInputError("codes must contain 100 or fewer items");
   }
+  const uniqueCodes = Array.from(new Set(codes));
 
-  let deleted = 0;
-  let skipped = 0;
-  for (const code of codes) {
-    const existing = await env.DB.prepare(`SELECT used_by FROM invite_codes WHERE code = ? LIMIT 1`)
-      .bind(code)
-      .first<{ used_by: string | null }>();
-    if (!existing || existing.used_by) {
-      skipped += 1;
-      continue;
-    }
-    await env.DB.prepare(`DELETE FROM invite_codes WHERE code = ? AND used_by IS NULL`).bind(code).run();
-    deleted += 1;
+  const placeholders = uniqueCodes.map(() => "?").join(", ");
+  const { results: existingCodes = [] } = await env.DB.prepare(
+    `SELECT code, used_by
+     FROM invite_codes
+     WHERE code IN (${placeholders})`
+  )
+    .bind(...uniqueCodes)
+    .all<{ code: string; used_by: string | null }>();
+
+  const deletableCodes = existingCodes.filter((row) => !row.used_by).map((row) => row.code);
+  if (deletableCodes.length) {
+    await env.DB.batch(
+      deletableCodes.map((code) =>
+        env.DB.prepare(`DELETE FROM invite_codes WHERE code = ? AND used_by IS NULL`).bind(code)
+      )
+    );
   }
 
-  return { deleted, skipped };
+  return { deleted: deletableCodes.length, skipped: codes.length - deletableCodes.length };
 }
 
 function parseInviteExpiresAt(value: string): string {
@@ -3065,6 +3156,22 @@ function readRequiredString(
   return value;
 }
 
+function countCharacters(value: string): number {
+  return Array.from(value).length;
+}
+
+function assertMaxCharacters(value: string, maxCharacters: number, displayName: string): void {
+  if (countCharacters(value) > maxCharacters) {
+    throw new AdminInputError(`${displayName} must be ${maxCharacters} characters or fewer`);
+  }
+}
+
+function assertMaxInteger(value: number, maxValue: number, displayName: string): void {
+  if (value > maxValue) {
+    throw new AdminInputError(`${displayName} must be ${maxValue} or less`);
+  }
+}
+
 function readOptionalString(record: Record<string, unknown> | null, names: string[]): string | null {
   if (!record) {
     return null;
@@ -3219,7 +3326,26 @@ function hasExplicitTimezone(value: string): boolean {
 }
 
 function isValidEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+  if (value.length > 254 || value.includes("..")) {
+    return false;
+  }
+
+  const parts = value.split("@");
+  if (parts.length !== 2) {
+    return false;
+  }
+
+  const [localPart, domain] = parts;
+  if (!localPart || localPart.length > 64 || !/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+$/.test(localPart)) {
+    return false;
+  }
+
+  const labels = domain.split(".");
+  if (labels.length < 2 || labels.some((label) => !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label))) {
+    return false;
+  }
+
+  return labels[labels.length - 1].length >= 2;
 }
 
 function isValidTaskId(value: string): boolean {

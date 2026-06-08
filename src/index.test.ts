@@ -655,6 +655,60 @@ describe("admin task input", () => {
     ).toThrow("recipientEmail must be a valid email address");
   });
 
+  it("accepts task title and body at the configured length limits", () => {
+    const task = buildTaskFromAdminInput(
+      {
+        recipientEmail: "user@example.com",
+        title: "一二三四五六七八九十一二三四五六七八九十",
+        body: "内".repeat(200),
+        minutesFromNow: 1,
+      },
+      { id: "task_limited", now: new Date("2026-06-07T12:00:00.000Z") }
+    );
+
+    expect(Array.from(task.title)).toHaveLength(20);
+    expect(Array.from(task.body)).toHaveLength(200);
+  });
+
+  it("rejects task text fields that are too long", () => {
+    expect(() =>
+      buildTaskFromAdminInput(
+        {
+          recipientEmail: "user@example.com",
+          title: "一二三四五六七八九十一二三四五六七八九十一",
+          minutesFromNow: 1,
+        },
+        { id: "task_title_long", now: new Date("2026-06-07T12:00:00.000Z") }
+      )
+    ).toThrow("title must be 20 characters or fewer");
+
+    expect(() =>
+      buildTaskFromAdminInput(
+        {
+          recipientEmail: "user@example.com",
+          title: "测试",
+          body: "内".repeat(201),
+          minutesFromNow: 1,
+        },
+        { id: "task_body_long", now: new Date("2026-06-07T12:00:00.000Z") }
+      )
+    ).toThrow("body must be 200 characters or fewer");
+  });
+
+  it("rejects task intervals beyond the scheduling limit", () => {
+    expect(() =>
+      buildTaskFromAdminInput(
+        {
+          recipientEmail: "user@example.com",
+          title: "测试",
+          minutesFromNow: 1,
+          nagIntervalMinutes: 527041,
+        },
+        { id: "task_nag_long", now: new Date("2026-06-07T12:00:00.000Z") }
+      )
+    ).toThrow("nagIntervalMinutes must be 527040 or less");
+  });
+
   it("builds an update payload for an existing task", () => {
     const update = buildTaskUpdateFromAdminInput(
       {
