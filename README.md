@@ -41,7 +41,7 @@ Mailbell 邮件铃是一个部署在 Cloudflare Workers 上的个人邮件提醒
 - Queue consumer 每批最多处理 10 封，批等待时间 2 秒，失败最多重试 10 次，仍失败会进入死信队列。
 - Cron 会巡检卡住的投递作业：`queued` 超过 5 分钟、`sending` 超过 2 分钟、`retrying` 超过 30 分钟会自动恢复为 `pending` 并重新入队。
 - 每次发送尝试都会写入 `send_logs`；失败会记录 provider、错误信息、任务、提醒轮次和 `delivery_key`，管理员可在日志页筛选失败记录。
-- Cron heartbeat 会带上本轮 `createdRuns`、`nagReminders`、`recoveredDeliveries` 和 `queuedDeliveries`，方便接入外部监控。
+- Cron heartbeat 会带上本轮 `createdRuns`、`nagReminders`、`recoveredDeliveries`、`queuedDeliveries`、`cleanupDeletedRows` 和 `backlog`，方便接入外部监控。
 
 Cloudflare Cron 本身是分钟级触发，因此这个项目的“按时”精度按分钟计算；队列和邮件服务短暂抖动时，系统会通过重试和恢复机制尽快补发。
 
@@ -138,7 +138,7 @@ npx wrangler secret put LINUXDO_CLIENT_SECRET
 npx wrangler secret put HEARTBEAT_URL
 ```
 
-Cron 每次成功跑完后会主动请求这个 URL。建议外部监控设置为超过 5 到 10 分钟未收到 ping 就报警。
+Cron 每次成功跑完后会主动请求这个 URL。建议外部监控设置为超过 5 到 10 分钟未收到 ping 就报警；如果 heartbeat 参数里 `backlog=1`，说明本轮扫描达到批处理上限，也建议告警。
 
 ### 5. 配置邮件服务
 

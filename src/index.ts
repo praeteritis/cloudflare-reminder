@@ -96,6 +96,8 @@ interface ProcessingSummary {
   nagReminders: number;
   recoveredDeliveries: number;
   queuedDeliveries: number;
+  cleanupDeletedRows: number;
+  backlog: boolean;
 }
 
 type ReminderDeliveryType = "reminder" | "nag";
@@ -214,7 +216,18 @@ const LOG_RETENTION_DAYS = 30;
 
 export default {
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(processDueReminders(env).then((summary) => pingHeartbeat(env, summary)));
+    ctx.waitUntil(
+      processDueReminders(env)
+        .then((summary) => pingHeartbeat(env, summary))
+        .catch((error) => {
+          console.warn(
+            JSON.stringify({
+              event: "scheduled_reminder_error",
+              error: error instanceof Error ? error.message : String(error),
+            })
+          );
+        })
+    );
   },
 
   async queue(batch: MessageBatch<ReminderDeliveryMessage>, env: Env) {
@@ -246,7 +259,18 @@ export default {
   },
 
   async email(message: InboundEmailMessage, env: Env, ctx: ExecutionContext) {
-    ctx.waitUntil(handleInboundReply(message, env));
+    ctx.waitUntil(
+      handleInboundReply(message, env).catch((error) => {
+        console.warn(
+          JSON.stringify({
+            event: "inbound_reply_error",
+            from: message.from,
+            to: message.to,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        );
+      })
+    );
   },
 
   async fetch(request: Request, env: Env) {
@@ -268,7 +292,7 @@ export default {
         authenticated: Boolean(actor),
         isAdmin: actor?.type === "admin",
         userEmail: actor?.email ?? null,
-        settings: toPublicSettings(settings, actor?.type === "admin"),
+        settings: toPublicSettings(settings),
       });
     }
 
@@ -356,13 +380,13 @@ export default {
         }
 
         if (url.pathname === "/admin/settings" && request.method === "GET") {
-          return Response.json({ ok: true, settings: await getPublicSettings(env, true) });
+          return Response.json({ ok: true, settings: await getPublicSettings(env) });
         }
 
         if (url.pathname === "/admin/settings" && request.method === "PATCH") {
           const settings = await updateAppSettingsFromInput(env, await readJsonBody(request));
           await logAudit(env, actor, "admin_settings_update", "settings", "app");
-          return Response.json({ ok: true, settings: toPublicSettings(settings, true) });
+          return Response.json({ ok: true, settings: toPublicSettings(settings) });
         }
 
         if (url.pathname === "/admin/invites" && request.method === "GET") {
@@ -622,26 +646,81 @@ async function processDueReminders(env: Env): Promise<ProcessingSummary> {
   const now = new Date();
   const nowIso = now.toISOString();
 
-  const createdRuns = await runSchedulerLoop(() => createRunsForDueTasks(env, now, nowIso), DUE_SCAN_LIMIT);
-  const nagReminders = await runSchedulerLoop(() => createJobsForDueNagReminders(env, nowIso), NAG_SCAN_LIMIT);
+  const createdRunResult = await runSchedulerLoop(() => createRunsForDueTasks(env, now, nowIso), DUE_SCAN_LIMIT);
+  const nagReminderResult = await runSchedulerLoop(() => createJobsForDueNagReminders(env, nowIso), NAG_SCAN_LIMIT);
   const recoveredDeliveries = await recoverStaleDeliveryJobs(env, now);
   const queuedDeliveries = await enqueuePendingDeliveryJobs(env, nowIso);
+  const cleanupDeletedRows = await cleanupExpiredOperationalRows(env, now);
+  const backlog = createdRunResult.backlog || nagReminderResult.backlog;
 
-  return { createdRuns, nagReminders, recoveredDeliveries, queuedDeliveries };
+  if (backlog) {
+    console.warn(
+      JSON.stringify({
+        event: "scheduler_backlog",
+        createdRuns: createdRunResult.total,
+        nagReminders: nagReminderResult.total,
+        maxLoops: SCHEDULER_MAX_LOOPS,
+      })
+    );
+  }
+
+  return {
+    createdRuns: createdRunResult.total,
+    nagReminders: nagReminderResult.total,
+    recoveredDeliveries,
+    queuedDeliveries,
+    cleanupDeletedRows,
+    backlog,
+  };
 }
 
-async function runSchedulerLoop(processBatch: () => Promise<number>, batchSize: number): Promise<number> {
+async function runSchedulerLoop(
+  processBatch: () => Promise<number>,
+  batchSize: number
+): Promise<{ total: number; backlog: boolean }> {
   let total = 0;
+  let lastBatchCount = 0;
 
   for (let i = 0; i < SCHEDULER_MAX_LOOPS; i += 1) {
     const count = await processBatch();
     total += count;
+    lastBatchCount = count;
     if (count < batchSize) {
       break;
     }
   }
 
-  return total;
+  return { total, backlog: lastBatchCount >= batchSize };
+}
+
+async function cleanupExpiredOperationalRows(env: Env, now: Date): Promise<number> {
+  const cutoffIso = new Date(now.getTime() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const results = await env.DB.batch([
+    env.DB.prepare(`DELETE FROM send_logs WHERE created_at_utc < ?`).bind(cutoffIso),
+    env.DB.prepare(`DELETE FROM audit_logs WHERE created_at_utc < ?`).bind(cutoffIso),
+    env.DB.prepare(
+      `DELETE FROM email_delivery_jobs
+       WHERE updated_at_utc < ?
+         AND status IN ('sent', 'failed', 'dead_lettered', 'skipped')`
+    ).bind(cutoffIso),
+    env.DB.prepare(
+      `DELETE FROM reminder_runs
+       WHERE updated_at_utc < ?
+         AND status IN ('completed', 'cancelled')`
+    ).bind(cutoffIso),
+    env.DB.prepare(
+      `DELETE FROM reminder_runs
+       WHERE updated_at_utc < ?
+         AND status = 'open'
+         AND NOT EXISTS (
+           SELECT 1
+           FROM tasks
+           WHERE tasks.current_run_id = reminder_runs.id
+         )`
+    ).bind(cutoffIso),
+  ]);
+
+  return results.reduce((total, result) => total + Number(result.meta.changes ?? 0), 0);
 }
 
 export async function pingHeartbeat(env: Pick<Env, "HEARTBEAT_URL">, summary: ProcessingSummary): Promise<void> {
@@ -655,6 +734,8 @@ export async function pingHeartbeat(env: Pick<Env, "HEARTBEAT_URL">, summary: Pr
     url.searchParams.set("nagReminders", String(summary.nagReminders));
     url.searchParams.set("recoveredDeliveries", String(summary.recoveredDeliveries));
     url.searchParams.set("queuedDeliveries", String(summary.queuedDeliveries));
+    url.searchParams.set("cleanupDeletedRows", String(summary.cleanupDeletedRows));
+    url.searchParams.set("backlog", summary.backlog ? "1" : "0");
 
     const response = await fetch(url.toString(), {
       method: "GET",
@@ -1202,7 +1283,7 @@ async function markEmailDeliveryJobSkipped(env: Env, deliveryKey: string, reason
     .run();
 }
 
-async function markDeadLetteredDeliveryMessages(
+export async function markDeadLetteredDeliveryMessages(
   env: Env,
   messages: readonly Message<ReminderDeliveryMessage>[]
 ): Promise<void> {
@@ -1222,7 +1303,76 @@ async function markDeadLetteredDeliveryMessages(
     )
       .bind(`dead letter queue after ${message.attempts} attempts`, nowIso, message.body.deliveryKey)
       .run();
+
+    await closeRunAfterDeadLetteredDelivery(env, message.body, message.attempts, nowIso);
   }
+}
+
+async function closeRunAfterDeadLetteredDelivery(
+  env: Env,
+  body: ReminderDeliveryMessage,
+  attempts: number,
+  nowIso: string
+): Promise<void> {
+  const row = await findOpenRunForDelivery(env, body.runId, body.taskId);
+  if (!row) {
+    return;
+  }
+
+  const nextDueAt = calculateNextDueAt(row, new Date(nowIso));
+  const cancelResult = await env.DB.prepare(
+    `UPDATE reminder_runs
+     SET status = 'cancelled',
+         next_nag_at_utc = NULL,
+         updated_at_utc = ?
+     WHERE id = ?
+       AND status = 'open'
+       AND EXISTS (
+         SELECT 1
+         FROM tasks
+         WHERE tasks.id = reminder_runs.task_id
+           AND tasks.status = 'active'
+           AND tasks.deleted_at_utc IS NULL
+           AND tasks.current_run_id = reminder_runs.id
+       )`
+  )
+    .bind(nowIso, body.runId)
+    .run();
+
+  if (cancelResult.meta.changes === 0) {
+    return;
+  }
+
+  if (nextDueAt) {
+    await env.DB.prepare(
+      `UPDATE tasks
+       SET current_run_id = NULL,
+           next_due_at_utc = ?,
+           status = 'active',
+           updated_at_utc = ?
+       WHERE id = ? AND current_run_id = ?`
+    )
+      .bind(nextDueAt.toISOString(), nowIso, row.id, body.runId)
+      .run();
+  } else {
+    await env.DB.prepare(
+      `UPDATE tasks
+       SET current_run_id = NULL,
+           status = 'paused',
+           updated_at_utc = ?
+       WHERE id = ? AND current_run_id = ?`
+    )
+      .bind(nowIso, row.id, body.runId)
+      .run();
+  }
+
+  await logAudit(env, { type: "system", email: "system" }, "reminder_run_dead_lettered", "task", row.id, {
+    runId: body.runId,
+    deliveryKey: body.deliveryKey,
+    deliveryType: body.type,
+    attempts,
+    nextDueAtUtc: nextDueAt?.toISOString() ?? null,
+  });
 }
 
 function isDeadLetterQueue(queueName: string): boolean {
@@ -1293,6 +1443,23 @@ async function handleInboundReply(message: InboundEmailMessage, env: Env): Promi
     .first<TaskRunRow>();
 
   if (!row) {
+    return;
+  }
+
+  if (!sameEmailAddress(parsed.from, row.recipient_email)) {
+    console.warn(
+      JSON.stringify({
+        event: "inbound_reply_sender_mismatch",
+        runId,
+        from: parsed.from,
+        expected: row.recipient_email,
+      })
+    );
+    await logAudit(env, { type: "system", email: "system" }, "inbound_reply_sender_mismatch", "task", row.id, {
+      runId,
+      from: parsed.from,
+      expected: row.recipient_email,
+    });
     return;
   }
 
@@ -1850,6 +2017,14 @@ async function parseInboundEmail(message: InboundEmailMessage): Promise<{
   };
 }
 
+function normalizeEmailAddress(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function sameEmailAddress(left: string, right: string): boolean {
+  return normalizeEmailAddress(left) === normalizeEmailAddress(right);
+}
+
 export function extractRunId(subject: string): string | null {
   const match = subject.match(RUN_ID_PATTERN);
   return match?.[1] ?? null;
@@ -1922,11 +2097,11 @@ async function getAppSettings(env: Env): Promise<AppSettings> {
   };
 }
 
-async function getPublicSettings(env: Env, includePrivate: boolean) {
-  return toPublicSettings(await getAppSettings(env), includePrivate);
+async function getPublicSettings(env: Env) {
+  return toPublicSettings(await getAppSettings(env));
 }
 
-function toPublicSettings(settings: AppSettings, includePrivate = false) {
+function toPublicSettings(settings: AppSettings) {
   return {
     allowRegistration: settings.allowRegistration,
     requireInvite: settings.requireInvite,
@@ -2791,7 +2966,9 @@ function parseAdminDueAt(value: string, timezone: string): Date {
 
 function appendDefaultTimezoneOffset(value: string, timezone: string): string {
   if (timezone !== DEFAULT_TIMEZONE) {
-    throw new AdminInputError('dueAt without an explicit timezone currently requires "Asia/Shanghai"');
+    throw new AdminInputError(
+      `dueAt without an explicit timezone currently requires "${DEFAULT_TIMEZONE}"; include an explicit offset such as 2026-06-07T20:00:00+08:00`
+    );
   }
 
   return `${value}+08:00`;

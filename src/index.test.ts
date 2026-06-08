@@ -11,6 +11,7 @@ import {
   formatInTimezone,
   getFirstMeaningfulLine,
   isReminderDeliveryMessage,
+  markDeadLetteredDeliveryMessages,
   pingHeartbeat,
 } from "./index";
 
@@ -45,6 +46,25 @@ interface MockPendingRow {
   created_at_utc: string;
 }
 
+interface MockReminderRunRow {
+  id: string;
+  task_id: string;
+  due_at_utc: string;
+  status: "open" | "completed" | "cancelled";
+  sent_count: number;
+  next_nag_at_utc: string | null;
+  updated_at_utc: string;
+}
+
+interface MockEmailDeliveryJobRow {
+  delivery_key: string;
+  run_id: string;
+  task_id: string;
+  status: "pending" | "queued" | "sending" | "retrying" | "sent" | "failed" | "dead_lettered" | "skipped";
+  last_error_message: string | null;
+  updated_at_utc: string;
+}
+
 class MockD1Database {
   settings = new Map<string, string>([
     ["allow_registration", "true"],
@@ -53,6 +73,10 @@ class MockD1Database {
   users: MockUserRow[] = [];
   invites: MockInviteRow[] = [{ code: "INVITE", used_by: null, expires_at_utc: "2099-01-01T00:00:00.000Z" }];
   pending: MockPendingRow[] = [];
+  tasks: ReturnType<typeof makeTask>[] = [];
+  runs: MockReminderRunRow[] = [];
+  jobs: MockEmailDeliveryJobRow[] = [];
+  auditLogs: Array<{ action: string; target_id: string | null; details: string | null }> = [];
 
   prepare(sql: string) {
     return new MockD1Statement(this, sql);
@@ -105,6 +129,29 @@ class MockD1Statement {
       return (
         this.db.pending.find((pending) => pending.token === this.values[0] && pending.provider === this.values[1]) ?? null
       ) as T | null;
+    }
+
+    if (compactSql.includes("FROM reminder_runs JOIN tasks")) {
+      const [runId, taskId] = this.values as string[];
+      const run = this.db.runs.find((row) => row.id === runId && row.task_id === taskId && row.status === "open");
+      const task = this.db.tasks.find(
+        (row) =>
+          row.id === taskId &&
+          row.status === "active" &&
+          row.deleted_at_utc === null &&
+          row.current_run_id === runId
+      );
+      if (!run || !task) {
+        return null;
+      }
+
+      return {
+        ...task,
+        run_id: run.id,
+        run_due_at_utc: run.due_at_utc,
+        run_sent_count: run.sent_count,
+        run_next_nag_at_utc: run.next_nag_at_utc,
+      } as T;
     }
 
     return null;
@@ -185,6 +232,74 @@ class MockD1Statement {
       return { meta: { changes: user ? 1 : 0 } };
     }
 
+    if (compactSql.includes("UPDATE email_delivery_jobs SET status = 'dead_lettered'")) {
+      const [lastErrorMessage, updatedAtUtc, deliveryKey] = this.values as string[];
+      const job = this.db.jobs.find((row) => row.delivery_key === deliveryKey && row.status !== "sent");
+      if (!job) {
+        return { meta: { changes: 0 } };
+      }
+
+      job.status = "dead_lettered";
+      job.last_error_message = lastErrorMessage;
+      job.updated_at_utc = updatedAtUtc;
+      return { meta: { changes: 1 } };
+    }
+
+    if (compactSql.includes("UPDATE reminder_runs SET status = 'cancelled'")) {
+      const [updatedAtUtc, runId] = this.values as string[];
+      const run = this.db.runs.find((row) => row.id === runId && row.status === "open");
+      const task = run
+        ? this.db.tasks.find(
+            (row) =>
+              row.id === run.task_id &&
+              row.status === "active" &&
+              row.deleted_at_utc === null &&
+              row.current_run_id === run.id
+          )
+        : null;
+      if (!run || !task) {
+        return { meta: { changes: 0 } };
+      }
+
+      run.status = "cancelled";
+      run.next_nag_at_utc = null;
+      run.updated_at_utc = updatedAtUtc;
+      return { meta: { changes: 1 } };
+    }
+
+    if (compactSql.includes("UPDATE tasks SET current_run_id = NULL, next_due_at_utc = ?")) {
+      const [nextDueAtUtc, updatedAtUtc, taskId, runId] = this.values as string[];
+      const task = this.db.tasks.find((row) => row.id === taskId && row.current_run_id === runId);
+      if (!task) {
+        return { meta: { changes: 0 } };
+      }
+
+      task.current_run_id = null;
+      task.next_due_at_utc = nextDueAtUtc;
+      task.status = "active";
+      task.updated_at_utc = updatedAtUtc;
+      return { meta: { changes: 1 } };
+    }
+
+    if (compactSql.includes("UPDATE tasks SET current_run_id = NULL, status = 'paused'")) {
+      const [updatedAtUtc, taskId, runId] = this.values as string[];
+      const task = this.db.tasks.find((row) => row.id === taskId && row.current_run_id === runId);
+      if (!task) {
+        return { meta: { changes: 0 } };
+      }
+
+      task.current_run_id = null;
+      task.status = "paused";
+      task.updated_at_utc = updatedAtUtc;
+      return { meta: { changes: 1 } };
+    }
+
+    if (compactSql.includes("INSERT INTO audit_logs")) {
+      const [, , , action, , targetId, details] = this.values as string[];
+      this.db.auditLogs.push({ action, target_id: targetId, details });
+      return { meta: { changes: 1 } };
+    }
+
     return { meta: { changes: 1 } };
   }
 }
@@ -204,6 +319,7 @@ function makeEnv(db = new MockD1Database()) {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 function makeTask(overrides: Record<string, unknown> = {}) {
@@ -225,6 +341,19 @@ function makeTask(overrides: Record<string, unknown> = {}) {
     updated_at_utc: "2026-06-07T00:00:00.000Z",
     ...overrides,
   } as Parameters<typeof calculateNextDueAt>[0];
+}
+
+function makeReminderDeliveryMessage(overrides: Record<string, unknown> = {}) {
+  return {
+    version: 1,
+    deliveryKey: "run_1:reminder:2026-06-07T00:00:00.000Z",
+    runId: "run_1",
+    taskId: "task_1",
+    type: "reminder",
+    scheduledForUtc: "2026-06-07T00:00:00.000Z",
+    enqueuedAtUtc: "2026-06-07T00:00:00.000Z",
+    ...overrides,
+  };
 }
 
 describe("reply parsing helpers", () => {
@@ -304,13 +433,20 @@ describe("cron heartbeat", () => {
 
     await pingHeartbeat(
       { HEARTBEAT_URL: "https://hc-ping.com/check-id" },
-      { createdRuns: 2, nagReminders: 3, recoveredDeliveries: 1, queuedDeliveries: 4 }
+      {
+        createdRuns: 2,
+        nagReminders: 3,
+        recoveredDeliveries: 1,
+        queuedDeliveries: 4,
+        cleanupDeletedRows: 5,
+        backlog: true,
+      }
     );
 
     expect(fetchMock).toHaveBeenCalledOnce();
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toBe(
-      "https://hc-ping.com/check-id?createdRuns=2&nagReminders=3&recoveredDeliveries=1&queuedDeliveries=4"
+      "https://hc-ping.com/check-id?createdRuns=2&nagReminders=3&recoveredDeliveries=1&queuedDeliveries=4&cleanupDeletedRows=5&backlog=1"
     );
     expect(init).toMatchObject({ method: "GET" });
   });
@@ -319,7 +455,17 @@ describe("cron heartbeat", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    await pingHeartbeat({}, { createdRuns: 0, nagReminders: 0, recoveredDeliveries: 0, queuedDeliveries: 0 });
+    await pingHeartbeat(
+      {},
+      {
+        createdRuns: 0,
+        nagReminders: 0,
+        recoveredDeliveries: 0,
+        queuedDeliveries: 0,
+        cleanupDeletedRows: 0,
+        backlog: false,
+      }
+    );
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -345,6 +491,91 @@ describe("queue delivery helpers", () => {
       })
     ).toBe(true);
     expect(isReminderDeliveryMessage({ version: 1, type: "completion" })).toBe(false);
+  });
+
+  it("dead-letters a one-time delivery by cancelling the run and pausing the task", async () => {
+    const db = new MockD1Database();
+    db.tasks.push(makeTask({ id: "task_1", current_run_id: "run_1", deleted_at_utc: null }));
+    db.runs.push({
+      id: "run_1",
+      task_id: "task_1",
+      due_at_utc: "2026-06-07T00:00:00.000Z",
+      status: "open",
+      sent_count: 0,
+      next_nag_at_utc: null,
+      updated_at_utc: "2026-06-07T00:00:00.000Z",
+    });
+    db.jobs.push({
+      delivery_key: "run_1:reminder:2026-06-07T00:00:00.000Z",
+      run_id: "run_1",
+      task_id: "task_1",
+      status: "retrying",
+      last_error_message: null,
+      updated_at_utc: "2026-06-07T00:00:00.000Z",
+    });
+
+    await markDeadLetteredDeliveryMessages(makeEnv(db), [
+      {
+        attempts: 10,
+        body: makeReminderDeliveryMessage(),
+      } as Message<any>,
+    ]);
+
+    expect(db.jobs[0]).toMatchObject({ status: "dead_lettered" });
+    expect(db.runs[0]).toMatchObject({ status: "cancelled", next_nag_at_utc: null });
+    expect(db.tasks[0]).toMatchObject({ status: "paused", current_run_id: null });
+    expect(db.auditLogs[0]).toMatchObject({ action: "reminder_run_dead_lettered", target_id: "task_1" });
+  });
+
+  it("dead-letters a recurring delivery by rolling the task to its next scheduled slot", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-07T00:30:00.000Z"));
+    const db = new MockD1Database();
+    db.tasks.push(
+      makeTask({
+        id: "task_repeat",
+        current_run_id: "run_repeat",
+        deleted_at_utc: null,
+        recurrence_type: "interval",
+        recurrence_interval_minutes: 60,
+        recurrence_anchor: "scheduled_time",
+      })
+    );
+    db.runs.push({
+      id: "run_repeat",
+      task_id: "task_repeat",
+      due_at_utc: "2026-06-07T00:00:00.000Z",
+      status: "open",
+      sent_count: 0,
+      next_nag_at_utc: null,
+      updated_at_utc: "2026-06-07T00:00:00.000Z",
+    });
+    db.jobs.push({
+      delivery_key: "run_repeat:reminder:2026-06-07T00:00:00.000Z",
+      run_id: "run_repeat",
+      task_id: "task_repeat",
+      status: "retrying",
+      last_error_message: null,
+      updated_at_utc: "2026-06-07T00:00:00.000Z",
+    });
+
+    await markDeadLetteredDeliveryMessages(makeEnv(db), [
+      {
+        attempts: 10,
+        body: makeReminderDeliveryMessage({
+          deliveryKey: "run_repeat:reminder:2026-06-07T00:00:00.000Z",
+          runId: "run_repeat",
+          taskId: "task_repeat",
+        }),
+      } as Message<any>,
+    ]);
+
+    expect(db.runs[0].status).toBe("cancelled");
+    expect(db.tasks[0]).toMatchObject({
+      status: "active",
+      current_run_id: null,
+      next_due_at_utc: "2026-06-07T01:00:00.000Z",
+    });
   });
 });
 
