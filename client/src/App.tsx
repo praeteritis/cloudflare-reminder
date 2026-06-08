@@ -113,6 +113,9 @@ interface Notice {
 }
 
 const PAGE_SIZE = 20;
+const TASK_TITLE_MAX_CHARS = 20;
+const TASK_BODY_MAX_CHARS = 200;
+const TASK_MAX_INTERVAL_MINUTES = 366 * 24 * 60;
 
 export function App() {
   const [session, setSession] = useState<SessionPayload | null>(null);
@@ -613,26 +616,59 @@ function TaskEditor({
   const [dueMode, setDueMode] = useState<DueMode>("relative");
   const [repeat, setRepeat] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [titleValue, setTitleValue] = useState(editing?.title || "");
+  const [bodyValue, setBodyValue] = useState(editing?.body || "");
+  const [nagUnit, setNagUnit] = useState("hour");
+  const editingNagDuration = durationAmount(editing?.nagIntervalMinutes || 60);
+  const editingRepeatDuration = durationAmount(editing?.recurrenceIntervalMinutes || 1);
+  const [nagAbsoluteUnit, setNagAbsoluteUnit] = useState(editingNagDuration.unit);
+  const [repeatUnit, setRepeatUnit] = useState(editingRepeatDuration.unit);
 
   useEffect(() => {
     setDueMode(editing ? "absolute" : "relative");
     setRepeat(editing?.recurrenceType === "interval");
+    setTitleValue(editing?.title || "");
+    setBodyValue(editing?.body || "");
+    const nextNagDuration = durationAmount(editing?.nagIntervalMinutes || 60);
+    const nextRepeatDuration = durationAmount(editing?.recurrenceIntervalMinutes || 1);
+    setNagUnit("hour");
+    setNagAbsoluteUnit(nextNagDuration.unit);
+    setRepeatUnit(nextRepeatDuration.unit);
   }, [editing]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setBusy(true);
     const form = event.currentTarget;
     const data = new FormData(form);
     const title = String(data.get("title") || "").trim();
+    const body = String(data.get("body") || "").trim() || title;
+    if (countCharacters(title) > TASK_TITLE_MAX_CHARS) {
+      onError(`标题最多 ${TASK_TITLE_MAX_CHARS} 个字符`);
+      return;
+    }
+    if (countCharacters(body) > TASK_BODY_MAX_CHARS) {
+      onError(`内容最多 ${TASK_BODY_MAX_CHARS} 个字符`);
+      return;
+    }
+
+    const nagIntervalMinutes =
+      dueMode === "relative"
+        ? durationToMinutes(data.get("nagAmount"), data.get("nagUnit"))
+        : durationToMinutes(data.get("nagAbsoluteAmount"), data.get("nagAbsoluteUnit"));
+    const recurrenceIntervalMinutes = repeat
+      ? durationToMinutes(data.get("repeatAmount"), data.get("repeatUnit"))
+      : null;
+    if (nagIntervalMinutes > TASK_MAX_INTERVAL_MINUTES || (recurrenceIntervalMinutes ?? 0) > TASK_MAX_INTERVAL_MINUTES) {
+      onError("提醒间隔最多 366 天");
+      return;
+    }
+
+    setBusy(true);
     const payload: Record<string, unknown> = {
       recipientEmail: String(data.get("recipientEmail") || "").trim(),
       title,
-      body: String(data.get("body") || "").trim() || title,
-      nagIntervalMinutes:
-        dueMode === "relative"
-          ? durationToMinutes(data.get("nagAmount"), data.get("nagUnit"))
-          : durationToMinutes(data.get("nagAbsoluteAmount"), data.get("nagAbsoluteUnit")),
+      body,
+      nagIntervalMinutes,
     };
     if (dueMode === "relative") {
       payload.minutesFromNow = durationToMinutes(data.get("relativeAmount"), data.get("relativeUnit"));
@@ -642,7 +678,7 @@ function TaskEditor({
     if (repeat) {
       payload.recurrence = {
         type: "interval",
-        intervalMinutes: durationToMinutes(data.get("repeatAmount"), data.get("repeatUnit")),
+        intervalMinutes: recurrenceIntervalMinutes,
         anchor: String(data.get("repeatAnchor") || "scheduled_time"),
       };
     }
@@ -676,11 +712,26 @@ function TaskEditor({
         </label>
         <label>
           标题
-          <input name="title" type="text" defaultValue={editing?.title || ""} required />
+          <input
+            name="title"
+            type="text"
+            value={titleValue}
+            maxLength={TASK_TITLE_MAX_CHARS}
+            onChange={(event) => setTitleValue(event.target.value)}
+            required
+          />
+          <span className="field-hint">{countCharacters(titleValue)}/{TASK_TITLE_MAX_CHARS}</span>
         </label>
         <label>
           内容
-          <textarea name="body" rows={4} defaultValue={editing?.body || ""} />
+          <textarea
+            name="body"
+            rows={4}
+            value={bodyValue}
+            maxLength={TASK_BODY_MAX_CHARS}
+            onChange={(event) => setBodyValue(event.target.value)}
+          />
+          <span className="field-hint">{countCharacters(bodyValue)}/{TASK_BODY_MAX_CHARS}</span>
         </label>
         <div className="segmented">
           <button type="button" aria-pressed={dueMode === "relative"} onClick={() => setDueMode("relative")}>
@@ -706,11 +757,11 @@ function TaskEditor({
             </label>
             <label>
               追提醒
-              <input name="nagAmount" type="number" min="1" defaultValue="1" required />
+              <input name="nagAmount" type="number" min="1" max={maxDurationAmount(nagUnit)} defaultValue="1" required />
             </label>
             <label>
               单位
-              <select name="nagUnit" defaultValue="hour">
+              <select name="nagUnit" value={nagUnit} onChange={(event) => setNagUnit(event.target.value)}>
                 <option value="minute">分钟</option>
                 <option value="hour">小时</option>
                 <option value="day">天</option>
@@ -725,11 +776,18 @@ function TaskEditor({
             </label>
             <label>
               追提醒
-              <input name="nagAbsoluteAmount" type="number" min="1" defaultValue={durationAmount(editing?.nagIntervalMinutes || 60).amount} required />
+              <input
+                name="nagAbsoluteAmount"
+                type="number"
+                min="1"
+                max={maxDurationAmount(nagAbsoluteUnit)}
+                defaultValue={editingNagDuration.amount}
+                required
+              />
             </label>
             <label>
               单位
-              <select name="nagAbsoluteUnit" defaultValue={durationAmount(editing?.nagIntervalMinutes || 60).unit}>
+              <select name="nagAbsoluteUnit" value={nagAbsoluteUnit} onChange={(event) => setNagAbsoluteUnit(event.target.value)}>
                 <option value="minute">分钟</option>
                 <option value="hour">小时</option>
                 <option value="day">天</option>
@@ -745,11 +803,18 @@ function TaskEditor({
           <div className="inline-fields">
             <label>
               每
-              <input name="repeatAmount" type="number" min="1" defaultValue={durationAmount(editing?.recurrenceIntervalMinutes || 1).amount} required />
+              <input
+                name="repeatAmount"
+                type="number"
+                min="1"
+                max={maxDurationAmount(repeatUnit)}
+                defaultValue={editingRepeatDuration.amount}
+                required
+              />
             </label>
             <label>
               单位
-              <select name="repeatUnit" defaultValue={durationAmount(editing?.recurrenceIntervalMinutes || 60).unit}>
+              <select name="repeatUnit" value={repeatUnit} onChange={(event) => setRepeatUnit(event.target.value)}>
                 <option value="minute">分钟</option>
                 <option value="hour">小时</option>
                 <option value="day">天</option>
@@ -1581,6 +1646,16 @@ function durationAmount(minutes: number): { amount: number; unit: string } {
   if (value > 0 && value % 1440 === 0) return { amount: value / 1440, unit: "day" };
   if (value > 0 && value % 60 === 0) return { amount: value / 60, unit: "hour" };
   return { amount: value, unit: "minute" };
+}
+
+function maxDurationAmount(unit: string): number {
+  if (unit === "day") return Math.floor(TASK_MAX_INTERVAL_MINUTES / 1440);
+  if (unit === "hour") return Math.floor(TASK_MAX_INTERVAL_MINUTES / 60);
+  return TASK_MAX_INTERVAL_MINUTES;
+}
+
+function countCharacters(value: string): number {
+  return Array.from(value).length;
 }
 
 function toDateTimeLocalValue(value?: string | null): string {
