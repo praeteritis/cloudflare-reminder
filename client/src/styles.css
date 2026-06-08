@@ -597,6 +597,64 @@ h3 {
   font-size: 14px;
 }
 
+.invite-table,
+.logs-table {
+  table-layout: fixed;
+}
+
+.invite-table {
+  min-width: 1040px;
+}
+
+.logs-table {
+  min-width: 1380px;
+}
+
+.invite-select-col {
+  width: 56px;
+}
+
+.invite-code-col {
+  width: 250px;
+}
+
+.invite-status-col {
+  width: 90px;
+}
+
+.invite-user-col {
+  width: 320px;
+}
+
+.invite-time-col {
+  width: 160px;
+}
+
+.log-result-col {
+  width: 76px;
+}
+
+.log-task-col,
+.log-type-col {
+  width: 92px;
+}
+
+.log-time-col {
+  width: 120px;
+}
+
+.log-user-col {
+  width: 360px;
+}
+
+.log-recipient-col {
+  width: 220px;
+}
+
+.log-detail-col {
+  width: auto;
+}
+
 .table th,
 .table td {
   padding: 11px 12px;
@@ -610,6 +668,14 @@ h3 {
   font-size: 12px;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.table-truncate {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pager {

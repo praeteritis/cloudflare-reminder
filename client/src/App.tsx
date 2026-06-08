@@ -1186,7 +1186,15 @@ function SettingsPage({ onSettingsChange }: { onSettingsChange: () => Promise<vo
         )}
         {invites.length ? (
           <div className="table-wrap">
-            <table className="table">
+            <table className="table invite-table">
+              <colgroup>
+                <col className="invite-select-col" />
+                <col className="invite-code-col" />
+                <col className="invite-status-col" />
+                <col className="invite-user-col" />
+                <col className="invite-time-col" />
+                <col className="invite-time-col" />
+              </colgroup>
               <thead>
                 <tr>
                   <th>
@@ -1237,7 +1245,11 @@ function SettingsPage({ onSettingsChange }: { onSettingsChange: () => Promise<vo
                         </div>
                       </td>
                       <td>{used ? "已使用" : expired ? "已过期" : "未使用"}</td>
-                      <td>{invite.usedByEmail || "-"}</td>
+                      <td>
+                        <span className="table-truncate" title={invite.usedByEmail || undefined}>
+                          {invite.usedByEmail || "-"}
+                        </span>
+                      </td>
                       <td>{formatTime(invite.expiresAtUtc)}</td>
                       <td>{formatTime(invite.createdAtUtc)}</td>
                     </tr>
@@ -1375,7 +1387,17 @@ function LogsPage({ isAdmin }: { isAdmin: boolean }) {
         <Empty text="加载中" />
       ) : logs.length ? (
         <div className="table-wrap">
-          <table className="table">
+          <table className="table logs-table">
+            <colgroup>
+              <col className="log-result-col" />
+              <col className="log-task-col" />
+              <col className="log-type-col" />
+              <col className="log-time-col" />
+              <col className="log-time-col" />
+              {isAdmin && <col className="log-user-col" />}
+              <col className="log-recipient-col" />
+              <col className="log-detail-col" />
+            </colgroup>
             <thead>
               <tr>
                 <th>结果</th>
@@ -1400,7 +1422,13 @@ function LogsPage({ isAdmin }: { isAdmin: boolean }) {
                   <td>{executionTypeLabel(log.type)}</td>
                   <td>{formatTime(log.dueAtUtc)}</td>
                   <td>{formatTime(log.createdAtUtc)}</td>
-                  {isAdmin && <td>{log.ownerEmail || "管理员任务"}</td>}
+                  {isAdmin && (
+                    <td>
+                      <span className="table-truncate" title={log.ownerEmail || undefined}>
+                        {log.ownerEmail || "管理员任务"}
+                      </span>
+                    </td>
+                  )}
                   <td>{log.recipientEmail || "-"}</td>
                   <td>{formatExecutionDetails(log)}</td>
                 </tr>
