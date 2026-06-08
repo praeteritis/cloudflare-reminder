@@ -259,33 +259,47 @@ h3 {
 }
 
 .notice {
+  position: fixed;
+  top: max(16px, env(safe-area-inset-top));
+  left: 50%;
+  z-index: 1000;
+  width: min(calc(100vw - 32px), 520px);
   min-height: 42px;
-  display: none;
+  display: flex;
   align-items: center;
   gap: 8px;
-  margin: 14px 20px 0;
   padding: 10px 12px;
   border: 1px solid rgba(21, 115, 71, 0.24);
   border-radius: 8px;
   background: #ecfdf3;
+  box-shadow: var(--shadow);
   color: var(--green);
   font-size: 14px;
   font-weight: 750;
-}
-
-.panel > .notice,
-.settings-grid-page .notice {
-  margin: 0 16px 14px;
+  pointer-events: none;
+  transform: translateX(-50%);
 }
 
 .notice.show {
-  display: flex;
+  animation: notice-in 160ms ease-out;
 }
 
 .notice.error {
   border-color: rgba(180, 35, 24, 0.24);
   background: var(--red-soft);
   color: var(--red);
+}
+
+@keyframes notice-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
 }
 
 .app {

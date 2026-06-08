@@ -166,10 +166,10 @@ function LoginPage({ settings, onSignedIn }: { settings: AppSettings; onSignedIn
     <main className="login-shell">
       <section className="login-panel">
         <div className="login-head">
-          <div className="mark">R</div>
+          <div className="mark">M</div>
           <div>
-            <h1>邮件提醒入口</h1>
-            <div className="sub">personal-mail-reminder</div>
+            <h1>邮件铃</h1>
+            <div className="sub">Mailbell</div>
           </div>
         </div>
 
@@ -187,7 +187,7 @@ function LoginPage({ settings, onSignedIn }: { settings: AppSettings; onSignedIn
           </div>
         )}
 
-        {notice && <NoticeBox notice={notice} />}
+        {notice && <NoticeBox notice={notice} onDismiss={() => setNotice(null)} />}
 
         {mode === "user-login" && (
           <PasswordAuthForm
@@ -398,10 +398,10 @@ function AuthedApp({ session, onSessionChange }: { session: SessionPayload; onSe
     <div className="app">
       <header className="topbar">
         <Link className="brand" to="/tasks">
-          <span className="mark">R</span>
+          <span className="mark">M</span>
           <span>
-            <strong>邮件提醒</strong>
-            <span>personal-mail-reminder</span>
+            <strong>邮件铃</strong>
+            <span>Mailbell</span>
           </span>
         </Link>
         <div className="account-tools">
@@ -571,7 +571,7 @@ function TasksPage({ session }: { session: SessionPayload }) {
             </button>
           </div>
         </div>
-        {notice && <NoticeBox notice={notice} />}
+        {notice && <NoticeBox notice={notice} onDismiss={() => setNotice(null)} />}
         <div className="filters">
           {["all", "active", "paused", "done", "cancelled"].map((item) => (
             <button key={item} className="filter" type="button" aria-pressed={status === item} onClick={() => setStatus(item)}>
@@ -897,7 +897,7 @@ function UsersPage() {
           刷新
         </button>
       </div>
-      {notice && <NoticeBox notice={notice} />}
+      {notice && <NoticeBox notice={notice} onDismiss={() => setNotice(null)} />}
       {loading ? (
         <Empty text="加载中" />
       ) : users.length ? (
@@ -1054,7 +1054,7 @@ function SettingsPage({ onSettingsChange }: { onSettingsChange: () => Promise<vo
             <p>注册开关和邀请码要求</p>
           </div>
         </div>
-        {notice && <NoticeBox notice={notice} />}
+        {notice && <NoticeBox notice={notice} onDismiss={() => setNotice(null)} />}
         <form className="form-grid" onSubmit={saveSettings}>
           <label className="remember">
             <input name="allowRegistration" type="checkbox" defaultChecked={settings.allowRegistration !== false} key={`allow-${settings.allowRegistration}`} />
@@ -1189,7 +1189,7 @@ function AnnouncementPage({ onSettingsChange }: { onSettingsChange: () => Promis
           <p>维护一条所有登录用户可见的公告</p>
         </div>
       </div>
-      {notice && <NoticeBox notice={notice} />}
+      {notice && <NoticeBox notice={notice} onDismiss={() => setNotice(null)} />}
       <form className="form-grid" onSubmit={save}>
         <label>
           公告内容
@@ -1245,7 +1245,7 @@ function LogsPage({ isAdmin }: { isAdmin: boolean }) {
           刷新
         </button>
       </div>
-      {notice && <NoticeBox notice={notice} />}
+      {notice && <NoticeBox notice={notice} onDismiss={() => setNotice(null)} />}
       <div className="filters">
         <select
           value={result}
@@ -1351,7 +1351,12 @@ function Modal({ title, onClose, children }: { title: string; onClose: () => voi
   );
 }
 
-function NoticeBox({ notice }: { notice: Notice }) {
+function NoticeBox({ notice, onDismiss }: { notice: Notice; onDismiss: () => void }) {
+  useEffect(() => {
+    const timer = window.setTimeout(onDismiss, 3000);
+    return () => window.clearTimeout(timer);
+  }, [notice.message, notice.type, onDismiss]);
+
   return (
     <div className={`notice show ${notice.type}`} role="status">
       {notice.type === "error" ? <AlertCircle size={16} /> : <Check size={16} />}
