@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ADMIN_PAGE_HTML, LOGIN_PAGE_HTML, renderAdminPage } from "./admin-page";
 import worker from "./index";
 import {
   buildTaskFromAdminInput,
@@ -499,59 +498,33 @@ describe("Linux.do OAuth flow", () => {
   });
 });
 
-describe("admin page", () => {
-  it("serves a management UI wired to the admin task API", () => {
-    expect(ADMIN_PAGE_HTML).toContain('id="task-form"');
-    expect(ADMIN_PAGE_HTML).toContain("/admin/tasks");
-    expect(ADMIN_PAGE_HTML).toContain("PATCH");
-    expect(ADMIN_PAGE_HTML).toContain('data-action="edit"');
-    expect(ADMIN_PAGE_HTML).toContain("/auth/logout");
-    expect(ADMIN_PAGE_HTML).toContain('id="relative-unit"');
-    expect(ADMIN_PAGE_HTML).toContain('id="nag-unit"');
-    expect(ADMIN_PAGE_HTML).toContain('id="repeat-unit"');
-    expect(ADMIN_PAGE_HTML).toContain('data-view="users"');
-    expect(ADMIN_PAGE_HTML).toContain('data-view="settings"');
-    expect(ADMIN_PAGE_HTML).toContain('data-view="logs"');
-    expect(ADMIN_PAGE_HTML).toContain('data-action="delete"');
-    expect(ADMIN_PAGE_HTML).toContain("/admin/users");
-    expect(ADMIN_PAGE_HTML).toContain("/admin/settings");
-    expect(ADMIN_PAGE_HTML).toContain("/admin/logs");
-    expect(ADMIN_PAGE_HTML).toContain("/admin/invites");
-    expect(ADMIN_PAGE_HTML).toContain('id="generate-invite"');
-    expect(ADMIN_PAGE_HTML).toContain('id="invite-count"');
-    expect(ADMIN_PAGE_HTML).toContain('id="invite-expires-at"');
-    expect(ADMIN_PAGE_HTML).toContain('id="delete-selected-invites"');
-    expect(ADMIN_PAGE_HTML).toContain('id="users-pager"');
-    expect(ADMIN_PAGE_HTML).toContain('id="invites-pager"');
-    expect(ADMIN_PAGE_HTML).toContain('id="logs-pager"');
-    expect(ADMIN_PAGE_HTML).toContain('id="settings-notice"');
-    expect(ADMIN_PAGE_HTML).toContain('id="announcement-notice"');
-    expect(ADMIN_PAGE_HTML).toContain('data-view="announcement"');
-    expect(ADMIN_PAGE_HTML).not.toContain('id="invite-code"');
-    expect(ADMIN_PAGE_HTML).toContain('id="announcement-button"');
+describe("app shell", () => {
+  it("serves the React asset entry when an assets binding is configured", async () => {
+    const assets = {
+      fetch: vi.fn(async () => new Response("<!doctype html><div id=\"root\"></div>", { headers: { "Content-Type": "text/html" } })),
+    };
+
+    const response = await worker.fetch(new Request("https://reminder.test/tasks", { headers: { Accept: "text/html" } }), {
+      ...makeEnv(),
+      ASSETS: assets as unknown as Fetcher,
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('id="root"');
+    expect(assets.fetch).toHaveBeenCalled();
   });
 
-  it("renders a normal user task API configuration", async () => {
-    const response = renderAdminPage({ isAdmin: false, userEmail: "user@example.com" });
-    const html = await response.text();
+  it("returns public session settings for unauthenticated visitors", async () => {
+    const response = await worker.fetch(new Request("https://reminder.test/auth/session"), makeEnv());
+    const payload = await response.json<{
+      authenticated: boolean;
+      isAdmin: boolean;
+      settings: { allowRegistration: boolean; requireInvite: boolean };
+    }>();
 
-    expect(html).toContain('"taskBasePath":"/user/tasks"');
-    expect(html).toContain('"userEmail":"user@example.com"');
-  });
-
-  it("serves a login UI wired to token authentication", () => {
-    expect(LOGIN_PAGE_HTML).toContain('id="login-form"');
-    expect(LOGIN_PAGE_HTML).toContain("邮件提醒入口");
-    expect(LOGIN_PAGE_HTML).not.toContain("管理员入口");
-    expect(LOGIN_PAGE_HTML).toContain("/auth/login");
-    expect(LOGIN_PAGE_HTML).toContain("/auth/user-login");
-    expect(LOGIN_PAGE_HTML).toContain("/auth/register");
-    expect(LOGIN_PAGE_HTML).toContain("/auth/linuxdo/start");
-    expect(LOGIN_PAGE_HTML).toContain("/auth/linuxdo/complete");
-    expect(LOGIN_PAGE_HTML).toContain('id="user-linuxdo-button"');
-    expect(LOGIN_PAGE_HTML).toContain('id="linuxdo-complete-form"');
-    expect(LOGIN_PAGE_HTML).toContain('id="register-invite-code"');
-    expect(LOGIN_PAGE_HTML).not.toContain('id="login-announcement"');
-    expect(LOGIN_PAGE_HTML).toContain("Admin Token");
+    expect(payload.authenticated).toBe(false);
+    expect(payload.isAdmin).toBe(false);
+    expect(payload.settings.allowRegistration).toBe(true);
+    expect(payload.settings.requireInvite).toBe(true);
   });
 });

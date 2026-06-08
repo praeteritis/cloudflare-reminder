@@ -5,11 +5,13 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
+    "build": "vite build",
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy --config wrangler.local.toml",
-    "deploy:public-config": "wrangler deploy",
+    "frontend:dev": "vite dev",
+    "deploy": "npm run build && wrangler deploy --config wrangler.local.toml",
+    "deploy:public-config": "npm run build && wrangler deploy",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.app.json --noEmit",
     "check:readiness": "node scripts/check-readiness.mjs",
     "config:email": "node scripts/configure-email.mjs",
     "seed:make": "node scripts/make-seed.mjs",
@@ -19,11 +21,19 @@
     "tail": "wrangler tail --config wrangler.local.toml"
   },
   "dependencies": {
-    "postal-mime": "^2.6.1"
+    "lucide-react": "^1.17.0",
+    "postal-mime": "^2.6.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "react-router-dom": "^7.17.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260605.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
     "typescript": "^5.8.3",
+    "vite": "^8.0.16",
     "vitest": "^4.1.8",
     "wrangler": "^4.20.0"
   }

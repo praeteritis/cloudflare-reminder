@@ -1,5 +1,4 @@
 import PostalMime from "postal-mime";
-import { renderAdminPage, renderLoginPage } from "./admin-page";
 
 type RecurrenceType = "none" | "interval";
 type RecurrenceAnchor = "scheduled_time" | "completion_time";
@@ -8,6 +7,7 @@ type UserStatus = "active" | "banned";
 
 interface Env {
   DB: D1Database;
+  ASSETS?: Fetcher;
   RESEND_API_KEY: string;
   TIMEZONE: string;
   FROM_EMAIL: string;
@@ -174,15 +174,23 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/" && request.method === "GET") {
+      return serveApp(request, env);
+    }
+
+    if (isAppRoute(url.pathname) && request.method === "GET" && acceptsHtml(request)) {
+      return serveApp(request, env);
+    }
+
+    if (url.pathname === "/auth/session" && request.method === "GET") {
       const actor = await getAuthenticatedActor(request, env);
       const settings = await getAppSettings(env);
-      return actor
-        ? renderAdminPage({
-            isAdmin: actor.type === "admin",
-            userEmail: actor.email,
-            settings: toPublicSettings(settings, actor.type === "admin"),
-          })
-        : renderLoginPage({ settings: toPublicSettings(settings, false) });
+      return Response.json({
+        ok: true,
+        authenticated: Boolean(actor),
+        isAdmin: actor?.type === "admin",
+        userEmail: actor?.email ?? null,
+        settings: toPublicSettings(settings, actor?.type === "admin"),
+      });
     }
 
     if (url.pathname === "/auth/login" && request.method === "POST") {
@@ -311,7 +319,7 @@ export default {
         }
 
         if (url.pathname === "/admin/logs" && request.method === "GET") {
-          const page = await listAuditLogs(env, url, "admin", undefined);
+          const page = await listReminderExecutionLogs(env, url, "admin", undefined);
           return Response.json({ ok: true, logs: page.items, page });
         }
 
@@ -398,7 +406,7 @@ export default {
         }
 
         if (url.pathname === "/user/logs" && request.method === "GET") {
-          const page = await listAuditLogs(env, url, "user", actor.userId);
+          const page = await listReminderExecutionLogs(env, url, "user", actor.userId);
           return Response.json({ ok: true, logs: page.items, page });
         }
 
@@ -471,7 +479,7 @@ function healthPayload() {
         "POST /admin/invites",
         "DELETE /admin/invites/<invite_code>",
         "POST /admin/invites/batch-delete",
-        "GET /admin/logs?action=all&limit=100",
+        "GET /admin/logs?result=all&type=delivery&page=1&pageSize=20",
         "POST /admin/process-due",
       ],
     },
@@ -491,10 +499,44 @@ function healthPayload() {
         "POST /user/tasks/<task_id>/pause",
         "POST /user/tasks/<task_id>/resume",
         "POST /user/tasks/<task_id>/cancel",
-        "GET /user/logs?action=all&limit=100",
+        "GET /user/logs?result=all&type=delivery&page=1&pageSize=20",
       ],
     },
   };
+}
+
+async function serveApp(request: Request, env: Env): Promise<Response> {
+  if (env.ASSETS) {
+    return env.ASSETS.fetch(request);
+  }
+
+  return new Response(
+    `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>邮件提醒</title>
+</head>
+<body>
+  <div id="root">React app assets are not available. Run npm run build before wrangler dev/deploy.</div>
+</body>
+</html>`,
+    {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store",
+      },
+    }
+  );
+}
+
+function acceptsHtml(request: Request): boolean {
+  return (request.headers.get("Accept") || "").includes("text/html");
+}
+
+function isAppRoute(pathname: string): boolean {
+  return ["/tasks", "/users", "/settings", "/announcement", "/logs"].includes(pathname);
 }
 
 async function processDueReminders(env: Env): Promise<ProcessingSummary> {
@@ -1089,6 +1131,115 @@ async function listAuditLogs(
       targetType: row.target_type,
       targetId: row.target_id,
       details: row.details ? safeJsonParse(row.details) : null,
+      createdAtUtc: row.created_at_utc,
+    })),
+    pagination,
+    Number(countRow?.count ?? 0)
+  );
+}
+
+async function listReminderExecutionLogs(
+  env: Env,
+  url: URL,
+  scope: "admin" | "user",
+  userId?: string
+) {
+  const pagination = readPagination(url, 20);
+  const result = url.searchParams.get("result");
+  const type = url.searchParams.get("type");
+  const since = new Date(Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+  const clauses = ["send_logs.created_at_utc >= ?"];
+  const params: unknown[] = [since];
+
+  if (result === "success" || result === "failed") {
+    clauses.push("send_logs.success = ?");
+    params.push(result === "success" ? 1 : 0);
+  }
+
+  if (type === "delivery") {
+    clauses.push("send_logs.type IN ('reminder', 'nag')");
+  } else if (type === "reminder" || type === "nag" || type === "completion") {
+    clauses.push("send_logs.type = ?");
+    params.push(type);
+  }
+
+  if (scope === "user") {
+    clauses.push("tasks.user_id = ?");
+    params.push(userId || "");
+  }
+
+  const from = `FROM send_logs
+    LEFT JOIN tasks ON tasks.id = send_logs.task_id
+    LEFT JOIN users ON users.id = tasks.user_id
+    LEFT JOIN reminder_runs ON reminder_runs.id = send_logs.run_id`;
+
+  const countRow = await env.DB.prepare(
+    `SELECT COUNT(*) AS count
+     ${from}
+     WHERE ${clauses.join(" AND ")}`
+  )
+    .bind(...params)
+    .first<{ count: number }>();
+
+  const queryParams = [...params, pagination.pageSize, pagination.offset];
+  const { results = [] } = await env.DB.prepare(
+    `SELECT
+       send_logs.id,
+       send_logs.run_id,
+       send_logs.task_id,
+       send_logs.type,
+       send_logs.recipient_email,
+       send_logs.subject,
+       send_logs.provider,
+       send_logs.provider_message_id,
+       send_logs.success,
+       send_logs.error_message,
+       send_logs.created_at_utc,
+       tasks.title AS task_title,
+       users.email AS user_email,
+       reminder_runs.due_at_utc AS due_at_utc,
+       reminder_runs.status AS run_status
+     ${from}
+     WHERE ${clauses.join(" AND ")}
+     ORDER BY send_logs.created_at_utc DESC
+     LIMIT ? OFFSET ?`
+  )
+    .bind(...queryParams)
+    .all<{
+      id: number;
+      run_id: string | null;
+      task_id: string | null;
+      type: "reminder" | "nag" | "completion";
+      recipient_email: string;
+      subject: string;
+      provider: string;
+      provider_message_id: string | null;
+      success: number;
+      error_message: string | null;
+      created_at_utc: string;
+      task_title: string | null;
+      user_email: string | null;
+      due_at_utc: string | null;
+      run_status: string | null;
+    }>();
+
+  return makePagedResult(
+    results.map((row) => ({
+      id: row.id,
+      runId: row.run_id,
+      taskId: row.task_id,
+      taskTitle: row.task_title,
+      ownerEmail: row.user_email,
+      type: row.type,
+      recipientEmail: row.recipient_email,
+      subject: row.subject,
+      provider: row.provider,
+      providerMessageId: row.provider_message_id,
+      success: Boolean(row.success),
+      status: row.success ? "success" : "failed",
+      errorMessage: row.error_message,
+      dueAtUtc: row.due_at_utc,
+      runStatus: row.run_status,
       createdAtUtc: row.created_at_utc,
     })),
     pagination,
