@@ -1422,7 +1422,7 @@ function LogsPage({ isAdmin }: { isAdmin: boolean }) {
         </button>
       </div>
       {notice && <NoticeBox notice={notice} onDismiss={() => setNotice(null)} />}
-      <div className="filters">
+      <div className="filters log-filters">
         <select
           value={result}
           onChange={(event) => {
