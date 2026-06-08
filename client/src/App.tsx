@@ -1135,7 +1135,7 @@ function SettingsPage({ onSettingsChange }: { onSettingsChange: () => Promise<vo
           </button>
         </div>
         {inviteModalOpen && (
-          <Modal title="生成邀请码" onClose={() => setInviteModalOpen(false)}>
+          <Modal title="生成邀请码" className="invite-modal" onClose={() => setInviteModalOpen(false)}>
             <form className="invite-form" onSubmit={createInvites}>
               <label>
                 数量
@@ -1433,10 +1433,20 @@ function Pager({ page, onChange }: { page: PagePayload | null; onChange: (page: 
   );
 }
 
-function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+function Modal({
+  title,
+  className = "",
+  onClose,
+  children,
+}: {
+  title: string;
+  className?: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
   return (
     <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <section className="modal">
+      <section className={["modal", className].filter(Boolean).join(" ")}>
         <div className="panel-head">
           <h2>{title}</h2>
           <button className="quiet icon-text" type="button" onClick={onClose}>

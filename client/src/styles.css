@@ -711,8 +711,16 @@ h3 {
   overflow: hidden;
 }
 
+.modal.invite-modal {
+  width: min(860px, calc(100vw - 32px));
+}
+
 .modal .invite-form {
   border-bottom: 1px solid var(--line);
+}
+
+.invite-modal .invite-form {
+  grid-template-columns: minmax(110px, 140px) minmax(220px, 1fr) minmax(160px, 1fr) minmax(170px, auto);
 }
 
 .modal-body {
@@ -759,6 +767,10 @@ h3 {
   .inline-fields,
   .invite-form {
     grid-template-columns: 1fr;
+  }
+
+  .modal.invite-modal {
+    width: min(100%, calc(100vw - 24px));
   }
 
   .invite-submit {
