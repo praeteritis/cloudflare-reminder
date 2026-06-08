@@ -259,6 +259,10 @@ wrangler.toml             公开安全的 Cloudflare Worker 配置
 wrangler.local.toml       本地私有部署配置，不提交到仓库
 ```
 
+## 友情支持
+
+[Linuxdo社区](https://linux.do)
+
 ## 许可证
 
 MIT。详见 [LICENSE](./LICENSE)。
