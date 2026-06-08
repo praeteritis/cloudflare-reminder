@@ -8,6 +8,7 @@ type UserStatus = "active" | "banned";
 interface Env {
   DB: D1Database;
   ASSETS?: Fetcher;
+  REMINDER_QUEUE?: Queue<ReminderDeliveryMessage>;
   RESEND_API_KEY: string;
   TIMEZONE: string;
   FROM_EMAIL: string;
@@ -93,6 +94,45 @@ interface InboundEmailMessage {
 interface ProcessingSummary {
   createdRuns: number;
   nagReminders: number;
+  recoveredDeliveries: number;
+  queuedDeliveries: number;
+}
+
+type ReminderDeliveryType = "reminder" | "nag";
+
+interface ReminderDeliveryMessage {
+  version: 1;
+  deliveryKey: string;
+  runId: string;
+  taskId: string;
+  type: ReminderDeliveryType;
+  scheduledForUtc: string;
+  enqueuedAtUtc: string;
+}
+
+interface EmailDeliveryJob {
+  delivery_key: string;
+  run_id: string;
+  task_id: string;
+  type: ReminderDeliveryType;
+  scheduled_for_utc: string;
+  status: "pending" | "queued" | "sending" | "retrying" | "sent" | "failed" | "dead_lettered" | "skipped";
+  attempt_count: number;
+  provider: string | null;
+  provider_message_id: string | null;
+  last_error_message: string | null;
+  queued_at_utc: string | null;
+  last_attempted_at_utc: string | null;
+  sent_at_utc: string | null;
+  created_at_utc: string;
+  updated_at_utc: string;
+}
+
+interface EmailSendResult {
+  success: boolean;
+  provider: string;
+  providerMessageId: string | null;
+  errorMessage: string | null;
 }
 
 interface User {
@@ -149,6 +189,17 @@ const DEFAULT_TIMEZONE = "Asia/Shanghai";
 const DEFAULT_NAG_INTERVAL_MINUTES = 1440;
 const FAILED_SEND_RETRY_MINUTES = 1;
 const MAX_LIST_LIMIT = 100;
+const DUE_SCAN_LIMIT = 250;
+const NAG_SCAN_LIMIT = 250;
+const SCHEDULER_MAX_LOOPS = 6;
+const DELIVERY_ENQUEUE_LIMIT = 1000;
+const DELIVERY_QUEUE_BATCH_SIZE = 100;
+const DELIVERY_RETRY_BASE_SECONDS = 60;
+const DELIVERY_RETRY_MAX_SECONDS = 30 * 60;
+const DELIVERY_CLAIM_STALE_SECONDS = 2 * 60;
+const DELIVERY_QUEUED_STALE_SECONDS = 5 * 60;
+const DELIVERY_RETRYING_STALE_SECONDS = 30 * 60;
+const DELIVERY_RECOVERY_LIMIT = 500;
 const NORMAL_USER_TASK_LIMIT = 5;
 const ADMIN_SESSION_COOKIE = "reminder_admin";
 const USER_SESSION_COOKIE = "reminder_user";
@@ -164,6 +215,34 @@ const LOG_RETENTION_DAYS = 30;
 export default {
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
     ctx.waitUntil(processDueReminders(env).then((summary) => pingHeartbeat(env, summary)));
+  },
+
+  async queue(batch: MessageBatch<ReminderDeliveryMessage>, env: Env) {
+    if (isDeadLetterQueue(batch.queue)) {
+      await markDeadLetteredDeliveryMessages(env, batch.messages);
+      batch.ackAll();
+      return;
+    }
+
+    for (const message of batch.messages) {
+      try {
+        const result = await processReminderDeliveryMessage(env, message.body, message.attempts);
+        if (result === "retry") {
+          message.retry({ delaySeconds: calculateQueueRetryDelaySeconds(message.attempts) });
+        } else {
+          message.ack();
+        }
+      } catch (error) {
+        console.warn(
+          JSON.stringify({
+            event: "queue_delivery_error",
+            messageId: message.id,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        );
+        message.retry({ delaySeconds: calculateQueueRetryDelaySeconds(message.attempts) });
+      }
+    }
   },
 
   async email(message: InboundEmailMessage, env: Env, ctx: ExecutionContext) {
@@ -516,7 +595,7 @@ async function serveApp(request: Request, env: Env): Promise<Response> {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>邮件提醒</title>
+  <title>邮件铃 Mailbell</title>
 </head>
 <body>
   <div id="root">React app assets are not available. Run npm run build before wrangler dev/deploy.</div>
@@ -543,10 +622,26 @@ async function processDueReminders(env: Env): Promise<ProcessingSummary> {
   const now = new Date();
   const nowIso = now.toISOString();
 
-  const createdRuns = await createRunsForDueTasks(env, now, nowIso);
-  const nagReminders = await sendDueNagReminders(env, now, nowIso);
+  const createdRuns = await runSchedulerLoop(() => createRunsForDueTasks(env, now, nowIso), DUE_SCAN_LIMIT);
+  const nagReminders = await runSchedulerLoop(() => createJobsForDueNagReminders(env, nowIso), NAG_SCAN_LIMIT);
+  const recoveredDeliveries = await recoverStaleDeliveryJobs(env, now);
+  const queuedDeliveries = await enqueuePendingDeliveryJobs(env, nowIso);
 
-  return { createdRuns, nagReminders };
+  return { createdRuns, nagReminders, recoveredDeliveries, queuedDeliveries };
+}
+
+async function runSchedulerLoop(processBatch: () => Promise<number>, batchSize: number): Promise<number> {
+  let total = 0;
+
+  for (let i = 0; i < SCHEDULER_MAX_LOOPS; i += 1) {
+    const count = await processBatch();
+    total += count;
+    if (count < batchSize) {
+      break;
+    }
+  }
+
+  return total;
 }
 
 export async function pingHeartbeat(env: Pick<Env, "HEARTBEAT_URL">, summary: ProcessingSummary): Promise<void> {
@@ -558,6 +653,8 @@ export async function pingHeartbeat(env: Pick<Env, "HEARTBEAT_URL">, summary: Pr
     const url = new URL(env.HEARTBEAT_URL);
     url.searchParams.set("createdRuns", String(summary.createdRuns));
     url.searchParams.set("nagReminders", String(summary.nagReminders));
+    url.searchParams.set("recoveredDeliveries", String(summary.recoveredDeliveries));
+    url.searchParams.set("queuedDeliveries", String(summary.queuedDeliveries));
 
     const response = await fetch(url.toString(), {
       method: "GET",
@@ -593,42 +690,70 @@ async function createRunsForDueTasks(env: Env, now: Date, nowIso: string): Promi
        AND next_due_at_utc <= ?
        AND (current_run_id IS NULL OR current_run_id = '')
      ORDER BY next_due_at_utc ASC
-     LIMIT 25`
+     LIMIT ?`
   )
-    .bind(nowIso)
+    .bind(nowIso, DUE_SCAN_LIMIT)
     .all<Task>();
+
+  let createdCount = 0;
 
   for (const task of tasks) {
     const runId = makeId("run");
-    const nextNagAt = addMinutes(now, task.nag_interval_minutes).toISOString();
+    await env.DB.prepare(
+      `INSERT INTO reminder_runs (
+         id,
+         task_id,
+         due_at_utc,
+         status,
+         sent_count,
+         next_nag_at_utc,
+         created_at_utc,
+         updated_at_utc
+       ) VALUES (?, ?, ?, 'open', 0, NULL, ?, ?)`
+    )
+      .bind(runId, task.id, task.next_due_at_utc, nowIso, nowIso)
+      .run();
 
-    await env.DB.batch([
-      env.DB.prepare(
-        `INSERT INTO reminder_runs (
-           id,
-           task_id,
-           due_at_utc,
-           status,
-           sent_count,
-           next_nag_at_utc,
-           created_at_utc,
-           updated_at_utc
-         ) VALUES (?, ?, ?, 'open', 0, ?, ?, ?)`
-      ).bind(runId, task.id, task.next_due_at_utc, nextNagAt, nowIso, nowIso),
-      env.DB.prepare(
-        `UPDATE tasks
-         SET current_run_id = ?, updated_at_utc = ?
-         WHERE id = ? AND (current_run_id IS NULL OR current_run_id = '')`
-      ).bind(runId, nowIso, task.id),
-    ]);
+    const acquireResult = await env.DB.prepare(
+      `UPDATE tasks
+       SET current_run_id = ?, updated_at_utc = ?
+       WHERE id = ?
+         AND status = 'active'
+         AND deleted_at_utc IS NULL
+         AND next_due_at_utc <= ?
+         AND (current_run_id IS NULL OR current_run_id = '')`
+    )
+      .bind(runId, nowIso, task.id, nowIso)
+      .run();
 
-    await sendReminderAndUpdateRun(env, task, runId, "reminder", now);
+    if (acquireResult.meta.changes === 0) {
+      await env.DB.prepare(
+        `UPDATE reminder_runs
+         SET status = 'cancelled',
+             next_nag_at_utc = NULL,
+             updated_at_utc = ?
+         WHERE id = ? AND status = 'open'`
+      )
+        .bind(nowIso, runId)
+        .run();
+      continue;
+    }
+
+    createdCount += 1;
+    await createEmailDeliveryJob(env, {
+      deliveryKey: buildReminderDeliveryKey(runId, "reminder", task.next_due_at_utc),
+      runId,
+      taskId: task.id,
+      type: "reminder",
+      scheduledForUtc: task.next_due_at_utc,
+      nowIso,
+    });
   }
 
-  return tasks.length;
+  return createdCount;
 }
 
-async function sendDueNagReminders(env: Env, now: Date, nowIso: string): Promise<number> {
+async function createJobsForDueNagReminders(env: Env, nowIso: string): Promise<number> {
   const { results: rows = [] } = await env.DB.prepare(
     `SELECT
        tasks.*,
@@ -641,41 +766,472 @@ async function sendDueNagReminders(env: Env, now: Date, nowIso: string): Promise
      WHERE reminder_runs.status = 'open'
        AND tasks.status = 'active'
        AND tasks.deleted_at_utc IS NULL
+       AND tasks.current_run_id = reminder_runs.id
        AND reminder_runs.next_nag_at_utc <= ?
      ORDER BY reminder_runs.next_nag_at_utc ASC
-     LIMIT 25`
+     LIMIT ?`
   )
-    .bind(nowIso)
+    .bind(nowIso, NAG_SCAN_LIMIT)
     .all<TaskRunRow>();
 
+  let createdCount = 0;
+
   for (const row of rows) {
-    await sendReminderAndUpdateRun(env, row, row.run_id, "nag", now);
+    const scheduledForUtc = row.run_next_nag_at_utc ?? nowIso;
+    await createEmailDeliveryJob(env, {
+      deliveryKey: buildReminderDeliveryKey(row.run_id, "nag", scheduledForUtc),
+      runId: row.run_id,
+      taskId: row.id,
+      type: "nag",
+      scheduledForUtc,
+      nowIso,
+    });
+
+    await env.DB.prepare(
+      `UPDATE reminder_runs
+       SET next_nag_at_utc = NULL,
+           updated_at_utc = ?
+       WHERE id = ?
+         AND status = 'open'
+         AND next_nag_at_utc = ?`
+    )
+      .bind(nowIso, row.run_id, scheduledForUtc)
+      .run();
+
+    createdCount += 1;
   }
 
-  return rows.length;
+  return createdCount;
 }
 
-async function sendReminderAndUpdateRun(
+async function updateRunAfterReminderDelivery(
   env: Env,
   task: Task,
   runId: string,
-  type: "reminder" | "nag",
+  type: ReminderDeliveryType,
   sentAt: Date
 ): Promise<void> {
   const sentAtIso = sentAt.toISOString();
-  const success = await sendReminderEmail(env, task, runId, type);
-  const nextNagAt = calculateNextNagAt(task, sentAt, success).toISOString();
+  const nextNagAt = calculateNextNagAt(task, sentAt, true).toISOString();
 
   await env.DB.prepare(
     `UPDATE reminder_runs
-     SET sent_count = sent_count + ?,
-         last_sent_at_utc = CASE WHEN ? = 1 THEN ? ELSE last_sent_at_utc END,
+     SET sent_count = sent_count + 1,
+         last_sent_at_utc = ?,
          next_nag_at_utc = ?,
          updated_at_utc = ?
      WHERE id = ? AND status = 'open'`
   )
-    .bind(success ? 1 : 0, success ? 1 : 0, sentAtIso, nextNagAt, sentAtIso, runId)
+    .bind(sentAtIso, nextNagAt, sentAtIso, runId)
     .run();
+
+  void type;
+}
+
+export function buildReminderDeliveryKey(runId: string, type: ReminderDeliveryType, scheduledForUtc: string): string {
+  return `${runId}:${type}:${scheduledForUtc}`;
+}
+
+async function createEmailDeliveryJob(
+  env: Env,
+  input: {
+    deliveryKey: string;
+    runId: string;
+    taskId: string;
+    type: ReminderDeliveryType;
+    scheduledForUtc: string;
+    nowIso: string;
+  }
+): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `INSERT OR IGNORE INTO email_delivery_jobs (
+       delivery_key,
+       run_id,
+       task_id,
+       type,
+       scheduled_for_utc,
+       status,
+       attempt_count,
+       created_at_utc,
+       updated_at_utc
+     ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)`
+  )
+    .bind(
+      input.deliveryKey,
+      input.runId,
+      input.taskId,
+      input.type,
+      input.scheduledForUtc,
+      input.nowIso,
+      input.nowIso
+    )
+    .run();
+
+  return result.meta.changes > 0;
+}
+
+async function recoverStaleDeliveryJobs(env: Env, now: Date): Promise<number> {
+  const nowIso = now.toISOString();
+  const queuedStaleBeforeIso = new Date(now.getTime() - DELIVERY_QUEUED_STALE_SECONDS * 1000).toISOString();
+  const sendingStaleBeforeIso = new Date(now.getTime() - DELIVERY_CLAIM_STALE_SECONDS * 1000).toISOString();
+  const retryingStaleBeforeIso = new Date(now.getTime() - DELIVERY_RETRYING_STALE_SECONDS * 1000).toISOString();
+
+  const { results: jobs = [] } = await env.DB.prepare(
+    `SELECT delivery_key, status
+     FROM email_delivery_jobs
+     WHERE (
+         status = 'queued' AND updated_at_utc <= ?
+       ) OR (
+         status = 'sending' AND updated_at_utc <= ?
+       ) OR (
+         status = 'retrying' AND updated_at_utc <= ?
+       )
+     ORDER BY updated_at_utc ASC
+     LIMIT ?`
+  )
+    .bind(queuedStaleBeforeIso, sendingStaleBeforeIso, retryingStaleBeforeIso, DELIVERY_RECOVERY_LIMIT)
+    .all<Pick<EmailDeliveryJob, "delivery_key" | "status">>();
+
+  if (!jobs.length) {
+    return 0;
+  }
+
+  await env.DB.batch(
+    jobs.map((job) =>
+      env.DB.prepare(
+        `UPDATE email_delivery_jobs
+         SET status = 'pending',
+             last_error_message = ?,
+             updated_at_utc = ?
+         WHERE delivery_key = ?
+           AND status = ?`
+      ).bind(`recovered stale ${job.status} delivery`, nowIso, job.delivery_key, job.status)
+    )
+  );
+
+  console.warn(
+    JSON.stringify({
+      event: "recovered_stale_delivery_jobs",
+      count: jobs.length,
+    })
+  );
+
+  return jobs.length;
+}
+
+async function enqueuePendingDeliveryJobs(env: Env, nowIso: string): Promise<number> {
+  const { results: jobs = [] } = await env.DB.prepare(
+    `SELECT *
+     FROM email_delivery_jobs
+     WHERE status = 'pending'
+     ORDER BY scheduled_for_utc ASC, created_at_utc ASC
+     LIMIT ?`
+  )
+    .bind(DELIVERY_ENQUEUE_LIMIT)
+    .all<EmailDeliveryJob>();
+
+  let queuedCount = 0;
+
+  if (!env.REMINDER_QUEUE) {
+    for (const job of jobs) {
+      const result = await processReminderDeliveryMessage(env, toReminderDeliveryMessage(job, nowIso), 1);
+      if (result !== "retry") {
+        queuedCount += 1;
+      }
+    }
+    return queuedCount;
+  }
+
+  for (const chunk of chunkArray(jobs, DELIVERY_QUEUE_BATCH_SIZE)) {
+    try {
+      await env.REMINDER_QUEUE.sendBatch(
+        chunk.map((job) => ({
+          body: toReminderDeliveryMessage(job, nowIso),
+          contentType: "json" as const,
+        }))
+      );
+
+      await env.DB.batch(
+        chunk.map((job) =>
+          env.DB.prepare(
+            `UPDATE email_delivery_jobs
+             SET status = 'queued',
+                 queued_at_utc = ?,
+                 last_error_message = NULL,
+                 updated_at_utc = ?
+             WHERE delivery_key = ?
+               AND status = 'pending'`
+          ).bind(nowIso, nowIso, job.delivery_key)
+        )
+      );
+      queuedCount += chunk.length;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      await env.DB.batch(
+        chunk.map((job) =>
+          env.DB.prepare(
+            `UPDATE email_delivery_jobs
+             SET last_error_message = ?,
+                 updated_at_utc = ?
+             WHERE delivery_key = ?
+               AND status = 'pending'`
+          ).bind(errorMessage, nowIso, job.delivery_key)
+        )
+      );
+    }
+  }
+
+  return queuedCount;
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
+function toReminderDeliveryMessage(job: EmailDeliveryJob, enqueuedAtUtc: string): ReminderDeliveryMessage {
+  return {
+    version: 1,
+    deliveryKey: job.delivery_key,
+    runId: job.run_id,
+    taskId: job.task_id,
+    type: job.type,
+    scheduledForUtc: job.scheduled_for_utc,
+    enqueuedAtUtc,
+  };
+}
+
+async function processReminderDeliveryMessage(
+  env: Env,
+  body: unknown,
+  queueAttempts: number
+): Promise<"sent" | "already_done" | "retry"> {
+  if (!isReminderDeliveryMessage(body)) {
+    return "already_done";
+  }
+
+  await ensureEmailDeliveryJobFromMessage(env, body);
+
+  const claim = await claimEmailDeliveryJob(env, body.deliveryKey);
+  if (claim === "sent" || claim === "skipped" || claim === "dead_lettered") {
+    return "already_done";
+  }
+  if (claim === "busy") {
+    return "retry";
+  }
+
+  const row = await findOpenRunForDelivery(env, body.runId, body.taskId);
+  if (!row) {
+    await markEmailDeliveryJobSkipped(env, body.deliveryKey, "run is no longer open");
+    return "already_done";
+  }
+
+  const result = await sendReminderEmail(env, row, body.runId, body.type, body.deliveryKey);
+  const now = new Date();
+  const nowIso = now.toISOString();
+
+  if (!result.success) {
+    await env.DB.prepare(
+      `UPDATE email_delivery_jobs
+       SET status = 'retrying',
+           provider = ?,
+           provider_message_id = ?,
+           last_error_message = ?,
+           updated_at_utc = ?
+       WHERE delivery_key = ?
+         AND status = 'sending'`
+    )
+      .bind(result.provider, result.providerMessageId, result.errorMessage, nowIso, body.deliveryKey)
+      .run();
+    console.warn(
+      JSON.stringify({
+        event: "reminder_delivery_failed",
+        deliveryKey: body.deliveryKey,
+        runId: body.runId,
+        taskId: body.taskId,
+        type: body.type,
+        attemptCount: queueAttempts,
+        error: result.errorMessage,
+      })
+    );
+    return "retry";
+  }
+
+  await updateRunAfterReminderDelivery(env, row, body.runId, body.type, now);
+  await env.DB.prepare(
+    `UPDATE email_delivery_jobs
+     SET status = 'sent',
+         provider = ?,
+         provider_message_id = ?,
+         last_error_message = NULL,
+         sent_at_utc = ?,
+         updated_at_utc = ?
+     WHERE delivery_key = ?`
+  )
+    .bind(result.provider, result.providerMessageId, nowIso, nowIso, body.deliveryKey)
+    .run();
+
+  void queueAttempts;
+  return "sent";
+}
+
+export function isReminderDeliveryMessage(value: unknown): value is ReminderDeliveryMessage {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  return (
+    record.version === 1 &&
+    typeof record.deliveryKey === "string" &&
+    typeof record.runId === "string" &&
+    typeof record.taskId === "string" &&
+    (record.type === "reminder" || record.type === "nag") &&
+    typeof record.scheduledForUtc === "string" &&
+    typeof record.enqueuedAtUtc === "string"
+  );
+}
+
+async function ensureEmailDeliveryJobFromMessage(env: Env, message: ReminderDeliveryMessage): Promise<void> {
+  const nowIso = new Date().toISOString();
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO email_delivery_jobs (
+       delivery_key,
+       run_id,
+       task_id,
+       type,
+       scheduled_for_utc,
+       status,
+       attempt_count,
+       queued_at_utc,
+       created_at_utc,
+       updated_at_utc
+     ) VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)`
+  )
+    .bind(
+      message.deliveryKey,
+      message.runId,
+      message.taskId,
+      message.type,
+      message.scheduledForUtc,
+      message.enqueuedAtUtc,
+      message.enqueuedAtUtc,
+      nowIso
+    )
+    .run();
+}
+
+async function claimEmailDeliveryJob(
+  env: Env,
+  deliveryKey: string
+): Promise<"claimed" | "sent" | "busy" | "skipped" | "dead_lettered"> {
+  const job = await env.DB.prepare(`SELECT * FROM email_delivery_jobs WHERE delivery_key = ? LIMIT 1`)
+    .bind(deliveryKey)
+    .first<EmailDeliveryJob>();
+
+  if (!job) {
+    return "busy";
+  }
+  if (job.status === "sent") {
+    return "sent";
+  }
+  if (job.status === "skipped") {
+    return "skipped";
+  }
+  if (job.status === "dead_lettered") {
+    return "dead_lettered";
+  }
+
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const staleBeforeIso = new Date(now.getTime() - DELIVERY_CLAIM_STALE_SECONDS * 1000).toISOString();
+  const result = await env.DB.prepare(
+    `UPDATE email_delivery_jobs
+     SET status = 'sending',
+         attempt_count = attempt_count + 1,
+         last_attempted_at_utc = ?,
+         updated_at_utc = ?
+     WHERE delivery_key = ?
+       AND status <> 'sent'
+       AND status <> 'skipped'
+       AND status <> 'dead_lettered'
+       AND (status <> 'sending' OR updated_at_utc <= ?)`
+  )
+    .bind(nowIso, nowIso, deliveryKey, staleBeforeIso)
+    .run();
+
+  return result.meta.changes > 0 ? "claimed" : "busy";
+}
+
+async function findOpenRunForDelivery(env: Env, runId: string, taskId: string): Promise<TaskRunRow | null> {
+  return env.DB.prepare(
+    `SELECT
+       tasks.*,
+       reminder_runs.id AS run_id,
+       reminder_runs.due_at_utc AS run_due_at_utc,
+       reminder_runs.sent_count AS run_sent_count,
+       reminder_runs.next_nag_at_utc AS run_next_nag_at_utc
+     FROM reminder_runs
+     JOIN tasks ON tasks.id = reminder_runs.task_id
+     WHERE reminder_runs.id = ?
+       AND tasks.id = ?
+       AND reminder_runs.status = 'open'
+       AND tasks.status = 'active'
+       AND tasks.deleted_at_utc IS NULL
+       AND tasks.current_run_id = reminder_runs.id
+     LIMIT 1`
+  )
+    .bind(runId, taskId)
+    .first<TaskRunRow>();
+}
+
+async function markEmailDeliveryJobSkipped(env: Env, deliveryKey: string, reason: string): Promise<void> {
+  const nowIso = new Date().toISOString();
+  await env.DB.prepare(
+    `UPDATE email_delivery_jobs
+     SET status = 'skipped',
+         last_error_message = ?,
+         updated_at_utc = ?
+     WHERE delivery_key = ?
+       AND status <> 'sent'`
+  )
+    .bind(reason, nowIso, deliveryKey)
+    .run();
+}
+
+async function markDeadLetteredDeliveryMessages(
+  env: Env,
+  messages: readonly Message<ReminderDeliveryMessage>[]
+): Promise<void> {
+  const nowIso = new Date().toISOString();
+  for (const message of messages) {
+    if (!isReminderDeliveryMessage(message.body)) {
+      continue;
+    }
+
+    await env.DB.prepare(
+      `UPDATE email_delivery_jobs
+       SET status = 'dead_lettered',
+           last_error_message = ?,
+           updated_at_utc = ?
+       WHERE delivery_key = ?
+         AND status <> 'sent'`
+    )
+      .bind(`dead letter queue after ${message.attempts} attempts`, nowIso, message.body.deliveryKey)
+      .run();
+  }
+}
+
+function isDeadLetterQueue(queueName: string): boolean {
+  return queueName.endsWith("-dlq");
+}
+
+function calculateQueueRetryDelaySeconds(attempts: number): number {
+  const exponent = Math.max(0, attempts - 1);
+  return Math.min(DELIVERY_RETRY_BASE_SECONDS * 2 ** exponent, DELIVERY_RETRY_MAX_SECONDS);
 }
 
 export function calculateNextNagAt(task: Pick<Task, "nag_interval_minutes">, sentAt: Date, success: boolean): Date {
@@ -686,8 +1242,9 @@ async function sendReminderEmail(
   env: Env,
   task: Task,
   runId: string,
-  type: "reminder" | "nag"
-): Promise<boolean> {
+  type: ReminderDeliveryType,
+  idempotencyKey: string
+): Promise<EmailSendResult> {
   const subject = `[R:${runId}] ${task.title}`;
   const text = `${task.body}
 
@@ -703,6 +1260,7 @@ async function sendReminderEmail(
     to: task.recipient_email,
     subject,
     text,
+    idempotencyKey,
   });
 }
 
@@ -726,6 +1284,9 @@ async function handleInboundReply(message: InboundEmailMessage, env: Env): Promi
      JOIN tasks ON tasks.id = reminder_runs.task_id
      WHERE reminder_runs.id = ?
        AND reminder_runs.status = 'open'
+       AND tasks.status = 'active'
+       AND tasks.deleted_at_utc IS NULL
+       AND tasks.current_run_id = reminder_runs.id
      LIMIT 1`
   )
     .bind(runId)
@@ -740,48 +1301,60 @@ async function handleInboundReply(message: InboundEmailMessage, env: Env): Promi
   const completedBy = parsed.from || message.from || "";
   const nextDueAt = calculateNextDueAt(row, completedAt);
 
-  const updates: D1PreparedStatement[] = [
-    env.DB.prepare(
-      `UPDATE reminder_runs
-       SET status = 'completed',
-           completed_at_utc = ?,
-           completed_by = ?,
-           updated_at_utc = ?
-       WHERE id = ? AND status = 'open'`
-    ).bind(completedAtIso, completedBy, completedAtIso, runId),
-  ];
+  const completionResult = await env.DB.prepare(
+    `UPDATE reminder_runs
+     SET status = 'completed',
+         completed_at_utc = ?,
+         completed_by = ?,
+         updated_at_utc = ?
+     WHERE id = ?
+       AND status = 'open'
+       AND EXISTS (
+         SELECT 1
+         FROM tasks
+         WHERE tasks.id = reminder_runs.task_id
+           AND tasks.status = 'active'
+           AND tasks.deleted_at_utc IS NULL
+           AND tasks.current_run_id = reminder_runs.id
+       )`
+  )
+    .bind(completedAtIso, completedBy, completedAtIso, runId)
+    .run();
 
-  if (nextDueAt) {
-    updates.push(
-      env.DB.prepare(
-        `UPDATE tasks
-         SET current_run_id = NULL,
-             next_due_at_utc = ?,
-             status = 'active',
-             updated_at_utc = ?
-         WHERE id = ?`
-      ).bind(nextDueAt.toISOString(), completedAtIso, row.id)
-    );
-  } else {
-    updates.push(
-      env.DB.prepare(
-        `UPDATE tasks
-         SET current_run_id = NULL,
-             status = 'done',
-             updated_at_utc = ?
-         WHERE id = ?`
-      ).bind(completedAtIso, row.id)
-    );
+  if (completionResult.meta.changes === 0) {
+    return;
   }
 
-  await env.DB.batch(updates);
+  if (nextDueAt) {
+    await env.DB.prepare(
+      `UPDATE tasks
+       SET current_run_id = NULL,
+           next_due_at_utc = ?,
+           status = 'active',
+           updated_at_utc = ?
+       WHERE id = ? AND current_run_id = ?`
+    )
+      .bind(nextDueAt.toISOString(), completedAtIso, row.id, runId)
+      .run();
+  } else {
+    await env.DB.prepare(
+      `UPDATE tasks
+       SET current_run_id = NULL,
+           status = 'done',
+           updated_at_utc = ?
+       WHERE id = ? AND current_run_id = ?`
+    )
+      .bind(completedAtIso, row.id, runId)
+      .run();
+  }
+
   await logAudit(env, { type: "system", email: "system" }, "task_completed_by_email", "task", row.id, {
     runId,
     completedBy,
   });
 
-  const completionSent = await sendCompletionEmail(env, row, runId, completedAt, nextDueAt);
-  if (completionSent) {
+  const completionEmailResult = await sendCompletionEmail(env, row, runId, completedAt, nextDueAt);
+  if (completionEmailResult.success) {
     await env.DB.prepare(
       `UPDATE reminder_runs
        SET completion_email_sent_at_utc = ?, updated_at_utc = ?
@@ -798,7 +1371,7 @@ async function sendCompletionEmail(
   runId: string,
   completedAt: Date,
   nextDueAt: Date | null
-): Promise<boolean> {
+): Promise<EmailSendResult> {
   const timezone = task.timezone || env.TIMEZONE || DEFAULT_TIMEZONE;
   const subject = `[已完成] ${task.title}`;
   const nextReminderLine = nextDueAt
@@ -933,8 +1506,9 @@ async function sendEmail(
     to: string;
     subject: string;
     text: string;
+    idempotencyKey?: string;
   }
-): Promise<boolean> {
+): Promise<EmailSendResult> {
   const createdAt = new Date().toISOString();
   let providerMessageId: string | null = null;
   let errorMessage: string | null = null;
@@ -955,6 +1529,7 @@ async function sendEmail(
         headers: {
           Authorization: `Bearer ${env.RESEND_API_KEY}`,
           "Content-Type": "application/json",
+          ...(input.idempotencyKey ? { "Idempotency-Key": input.idempotencyKey } : {}),
         },
         body: JSON.stringify({
           from: env.FROM_EMAIL,
@@ -989,8 +1564,9 @@ async function sendEmail(
        provider_message_id,
        success,
        error_message,
+       delivery_key,
        created_at_utc
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       input.runId,
@@ -1002,6 +1578,7 @@ async function sendEmail(
       providerMessageId,
       success ? 1 : 0,
       errorMessage,
+      input.idempotencyKey ?? null,
       createdAt
     )
     .run();
@@ -1017,11 +1594,17 @@ async function sendEmail(
       type: input.type,
       to: input.to,
       subject: input.subject,
+      deliveryKey: input.idempotencyKey ?? null,
       error: errorMessage,
     }
   );
 
-  return success;
+  return {
+    success,
+    provider,
+    providerMessageId,
+    errorMessage,
+  };
 }
 
 async function logAudit(
@@ -1477,17 +2060,15 @@ async function softDeleteTask(env: Env, id: string, userId?: string): Promise<Ta
   const deletedAt = new Date().toISOString();
   const statements: D1PreparedStatement[] = [];
 
-  if (existing.current_run_id) {
-    statements.push(
-      env.DB.prepare(
-        `UPDATE reminder_runs
-         SET status = 'cancelled',
-             next_nag_at_utc = NULL,
-             updated_at_utc = ?
-         WHERE id = ? AND status = 'open'`
-      ).bind(deletedAt, existing.current_run_id)
-    );
-  }
+  statements.push(
+    env.DB.prepare(
+      `UPDATE reminder_runs
+       SET status = 'cancelled',
+           next_nag_at_utc = NULL,
+           updated_at_utc = ?
+       WHERE task_id = ? AND status = 'open'`
+    ).bind(deletedAt, existing.id)
+  );
 
   statements.push(
     env.DB.prepare(
@@ -1585,15 +2166,32 @@ async function listUserTasks(env: Env, url: URL, userId: string) {
 async function setTaskStatus(env: Env, id: string, status: TaskStatus, userId?: string): Promise<Task> {
   const updatedAt = new Date().toISOString();
   const ownership = userId ? " AND user_id = ?" : " AND user_id IS NULL";
-  const params = userId ? [status, updatedAt, id, userId] : [status, updatedAt, id];
+  const taskParams = userId ? [status, status, updatedAt, id, userId] : [status, status, updatedAt, id];
+  const statements: D1PreparedStatement[] = [];
 
-  await env.DB.prepare(
-    `UPDATE tasks
-     SET status = ?, updated_at_utc = ?
-     WHERE id = ?${ownership}`
-  )
-    .bind(...params)
-    .run();
+  if (status !== "active") {
+    statements.push(
+      env.DB.prepare(
+        `UPDATE reminder_runs
+         SET status = 'cancelled',
+             next_nag_at_utc = NULL,
+             updated_at_utc = ?
+         WHERE task_id = ? AND status = 'open'`
+      ).bind(updatedAt, id)
+    );
+  }
+
+  statements.push(
+    env.DB.prepare(
+      `UPDATE tasks
+       SET status = ?,
+           current_run_id = CASE WHEN ? = 'active' THEN current_run_id ELSE NULL END,
+           updated_at_utc = ?
+       WHERE id = ?${ownership}`
+    ).bind(...taskParams)
+  );
+
+  await env.DB.batch(statements);
 
   const task = userId ? await findTaskById(env, id, userId) : await findAdminTaskById(env, id);
   if (!task) {
@@ -1619,17 +2217,15 @@ async function updateTaskFromAdminInput(env: Env, id: string, input: unknown, us
   });
   const statements: D1PreparedStatement[] = [];
 
-  if (existing.current_run_id) {
-    statements.push(
-      env.DB.prepare(
-        `UPDATE reminder_runs
-         SET status = 'cancelled',
-             next_nag_at_utc = NULL,
-             updated_at_utc = ?
-         WHERE id = ? AND status = 'open'`
-      ).bind(update.updated_at_utc, existing.current_run_id)
-    );
-  }
+  statements.push(
+    env.DB.prepare(
+      `UPDATE reminder_runs
+       SET status = 'cancelled',
+           next_nag_at_utc = NULL,
+           updated_at_utc = ?
+       WHERE task_id = ? AND status = 'open'`
+    ).bind(update.updated_at_utc, existing.id)
+  );
 
   statements.push(
     env.DB.prepare(
@@ -2704,7 +3300,7 @@ async function exchangeLinuxDoCode(
   const response = await fetch(LINUXDO_TOKEN_URL, {
     method: "POST",
     headers: {
-      "Authorization": `Basic ${btoa(`${clientId}:${clientSecret}`)}`,
+      "Authorization": createOAuthBasicAuthorization(clientId, clientSecret),
       "Content-Type": "application/x-www-form-urlencoded",
     },
     body,
@@ -2951,19 +3547,25 @@ function linuxDoRedirectUri(request: Request): string {
 }
 
 function requireLinuxDoClientId(env: Env): string {
-  if (!env.LINUXDO_CLIENT_ID) {
+  const clientId = env.LINUXDO_CLIENT_ID?.trim();
+  if (!clientId) {
     throw new AdminInputError("LINUXDO_CLIENT_ID is not configured", 500);
   }
 
-  return env.LINUXDO_CLIENT_ID;
+  return clientId;
 }
 
 function requireLinuxDoClientSecret(env: Env): string {
-  if (!env.LINUXDO_CLIENT_SECRET) {
+  const clientSecret = env.LINUXDO_CLIENT_SECRET?.trim();
+  if (!clientSecret) {
     throw new AdminInputError("LINUXDO_CLIENT_SECRET is not configured", 500);
   }
 
-  return env.LINUXDO_CLIENT_SECRET;
+  return clientSecret;
+}
+
+function createOAuthBasicAuthorization(clientId: string, clientSecret: string): string {
+  return `Basic ${btoa(`${clientId}:${clientSecret}`)}`;
 }
 
 function normalizeLinuxDoAvatar(value: string | null): string | null {

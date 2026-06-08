@@ -14,6 +14,23 @@ keep_vars = true
 [triggers]
 crons = ["* * * * *"]
 
+[[queues.producers]]
+binding = "REMINDER_QUEUE"
+queue = "personal-mail-reminder-delivery"
+
+[[queues.consumers]]
+queue = "personal-mail-reminder-delivery"
+max_batch_size = 10
+max_batch_timeout = 2
+max_retries = 10
+retry_delay = 60
+dead_letter_queue = "personal-mail-reminder-delivery-dlq"
+
+[[queues.consumers]]
+queue = "personal-mail-reminder-delivery-dlq"
+max_batch_size = 10
+max_batch_timeout = 5
+
 [assets]
 directory = "./dist"
 binding = "ASSETS"

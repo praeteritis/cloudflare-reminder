@@ -3,12 +3,14 @@ import worker from "./index";
 import {
   buildTaskFromAdminInput,
   buildTaskUpdateFromAdminInput,
+  buildReminderDeliveryKey,
   calculateNextNagAt,
   calculateNextDueAt,
   assertNormalUserTaskLimit,
   extractRunId,
   formatInTimezone,
   getFirstMeaningfulLine,
+  isReminderDeliveryMessage,
   pingHeartbeat,
 } from "./index";
 
@@ -302,12 +304,14 @@ describe("cron heartbeat", () => {
 
     await pingHeartbeat(
       { HEARTBEAT_URL: "https://hc-ping.com/check-id" },
-      { createdRuns: 2, nagReminders: 3 }
+      { createdRuns: 2, nagReminders: 3, recoveredDeliveries: 1, queuedDeliveries: 4 }
     );
 
     expect(fetchMock).toHaveBeenCalledOnce();
     const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toBe("https://hc-ping.com/check-id?createdRuns=2&nagReminders=3");
+    expect(String(url)).toBe(
+      "https://hc-ping.com/check-id?createdRuns=2&nagReminders=3&recoveredDeliveries=1&queuedDeliveries=4"
+    );
     expect(init).toMatchObject({ method: "GET" });
   });
 
@@ -315,9 +319,32 @@ describe("cron heartbeat", () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
 
-    await pingHeartbeat({}, { createdRuns: 0, nagReminders: 0 });
+    await pingHeartbeat({}, { createdRuns: 0, nagReminders: 0, recoveredDeliveries: 0, queuedDeliveries: 0 });
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("queue delivery helpers", () => {
+  it("builds stable reminder delivery keys", () => {
+    expect(buildReminderDeliveryKey("run_1", "nag", "2026-06-07T12:00:00.000Z")).toBe(
+      "run_1:nag:2026-06-07T12:00:00.000Z"
+    );
+  });
+
+  it("validates reminder delivery messages", () => {
+    expect(
+      isReminderDeliveryMessage({
+        version: 1,
+        deliveryKey: "run_1:reminder:2026-06-07T12:00:00.000Z",
+        runId: "run_1",
+        taskId: "task_1",
+        type: "reminder",
+        scheduledForUtc: "2026-06-07T12:00:00.000Z",
+        enqueuedAtUtc: "2026-06-07T12:00:00.000Z",
+      })
+    ).toBe(true);
+    expect(isReminderDeliveryMessage({ version: 1, type: "completion" })).toBe(false);
   });
 });
 
@@ -446,6 +473,72 @@ describe("Linux.do OAuth flow", () => {
 
     expect(response.status).toBe(302);
     expect(response.headers.get("location")).toContain("https://connect.linux.do/oauth2/authorize");
+  });
+
+  it("lets an existing Linux.do user sign in when registration is closed", async () => {
+    const db = new MockD1Database();
+    db.settings.set("allow_registration", "false");
+    db.users.push({
+      id: "user_1",
+      email: "neo@example.com",
+      password_hash: "",
+      password_salt: "",
+      status: "active",
+      linuxdo_id: "42",
+      linuxdo_username: "neo",
+      display_name: "Neo",
+      avatar_url: null,
+      last_login_at_utc: null,
+      banned_at_utc: null,
+      banned_reason: null,
+      created_at_utc: "2026-06-08T00:00:00.000Z",
+      updated_at_utc: "2026-06-08T00:00:00.000Z",
+    });
+    const env = makeEnv(db);
+    const start = await worker.fetch(new Request("https://reminder.test/auth/linuxdo/start"), env);
+    const state = new URL(start.headers.get("location") || "").searchParams.get("state");
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "token" })))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42, username: "neo", name: "Neo" })))
+    );
+
+    const response = await worker.fetch(
+      new Request(`https://reminder.test/auth/linuxdo/callback?code=ok&state=${encodeURIComponent(state || "")}`),
+      env
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/");
+    expect(response.headers.get("set-cookie")).toContain("reminder_user=");
+    expect(db.pending).toHaveLength(0);
+  });
+
+  it("trims Linux.do client credentials before exchanging the OAuth code", async () => {
+    const db = new MockD1Database();
+    const env = {
+      ...makeEnv(db),
+      LINUXDO_CLIENT_ID: " client ",
+      LINUXDO_CLIENT_SECRET: " secret ",
+    } as Parameters<typeof worker.fetch>[1];
+    const start = await worker.fetch(new Request("https://reminder.test/auth/linuxdo/start"), env);
+    const state = new URL(start.headers.get("location") || "").searchParams.get("state");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "token" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42, username: "neo", name: "Neo" })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await worker.fetch(
+      new Request(`https://reminder.test/auth/linuxdo/callback?code=ok&state=${encodeURIComponent(state || "")}`),
+      env
+    );
+
+    expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({
+      Authorization: `Basic ${btoa("client:secret")}`,
+    });
   });
 
   it("redirects new Linux.do users to an invite completion step", async () => {

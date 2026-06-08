@@ -1,27 +1,49 @@
-# Personal Mail Reminder
+# Mailbell 邮件铃
 
-Personal Mail Reminder 是一个部署在 Cloudflare Workers 上的个人邮件提醒工具。它会按计划发送提醒邮件，在任务未完成时继续追提醒；当收件人直接回复邮件并在正文第一行写 `1`，系统会自动把这次提醒标记为完成。
+Mailbell 邮件铃是一个部署在 Cloudflare Workers 上的个人邮件提醒工具。它会按计划把提醒送到邮箱，在任务未完成时继续追提醒；收件人直接回复邮件并在正文第一行写 `1`，系统会自动把这次提醒标记为完成。
 
 ## 简介
 
-这个项目适合用来给自己或小范围用户发送可回复的邮件提醒，例如喝水、复盘、定期检查事项、每日任务等。
+这个项目适合给自己或小范围用户发送可回复的邮件提醒，例如喝水、复盘、定期检查事项、每日任务、定期续费和团队内轻量提醒等。它不是一个复杂的协作系统，更像一个放在邮箱里的小铃铛：到点来信，没完成就再敲一下，完成后回一封 `1` 即可。
 
 核心能力：
 
-- 通过网页管理台创建、查看、暂停、恢复和取消提醒。
-- 支持普通用户注册和登录；普通用户最多可创建 5 个任务。
-- 支持 Linux.do OAuth 登录、注册开关、邀请码、公告、用户管理和最近 30 天日志。
-- 支持一次性提醒和按间隔重复提醒。
-- 支持未完成追提醒。
-- 支持通过回复邮件完成提醒。
-- 支持完成后发送确认邮件。
+- 通过网页界面创建、查看、编辑、暂停、恢复、取消和删除提醒。
+- 支持相对时间和指定时间两种创建方式。
+- 支持一次性提醒，以及按固定间隔重复提醒。
+- 支持两种重复锚点：按计划时间滚动，或按实际完成时间重新计算。
+- 支持未完成追提醒，可为每个任务单独设置追提醒间隔。
+- 支持通过回复邮件完成提醒，正文第一行写 `1` 即可。
+- 支持完成确认邮件，让收件人知道系统已经收到回复。
+- 支持普通用户注册和登录；普通用户默认最多可创建 5 个任务。
+- 支持 Linux.do OAuth 登录。
+- 支持关闭注册、开启邀请码、批量生成邀请码和设置邀请码过期时间。
+- 支持公告、用户管理、封禁/解封用户、删除用户及其数据。
+- 支持最近 30 天发送日志，便于排查邮件投递和任务执行问题。
+- 支持 Cron 运行 heartbeat，方便接入外部监控。
+- 支持本地开发时只记录邮件日志，不实际发信。
 
 技术组成：
 
 - Cloudflare Workers：运行管理台、管理 API、定时任务和入站邮件处理。
+- Cloudflare Queues：缓冲提醒邮件发送、批量消费、自动重试失败投递，并把最终失败消息送入 DLQ。
 - Cloudflare D1：保存提醒任务、提醒轮次和发信记录。
 - Resend：发送提醒邮件。
 - Cloudflare Email Routing：接收回复邮件并投递给 Worker。
+
+## 调度可靠性
+
+提醒发送按“先生成投递作业，再由队列发信”的方式运行：
+
+- Cron 每分钟扫描到期任务和到期追提醒；单次最多连续处理 6 批，每批 250 条，能覆盖约 1500 个同一分钟到期的任务。
+- 每封提醒都有稳定的 `delivery_key`，重复入队或 Queue 至少一次投递不会造成同一轮提醒重复发送。
+- 到期提醒先写入 `email_delivery_jobs`，再批量写入 Cloudflare Queues；队列消费端负责调用 Resend 发信。
+- Queue consumer 每批最多处理 10 封，批等待时间 2 秒，失败最多重试 10 次，仍失败会进入死信队列。
+- Cron 会巡检卡住的投递作业：`queued` 超过 5 分钟、`sending` 超过 2 分钟、`retrying` 超过 30 分钟会自动恢复为 `pending` 并重新入队。
+- 每次发送尝试都会写入 `send_logs`；失败会记录 provider、错误信息、任务、提醒轮次和 `delivery_key`，管理员可在日志页筛选失败记录。
+- Cron heartbeat 会带上本轮 `createdRuns`、`nagReminders`、`recoveredDeliveries` 和 `queuedDeliveries`，方便接入外部监控。
+
+Cloudflare Cron 本身是分钟级触发，因此这个项目的“按时”精度按分钟计算；队列和邮件服务短暂抖动时，系统会通过重试和恢复机制尽快补发。
 
 ## 界面预览
 
@@ -63,7 +85,22 @@ cp wrangler.local.toml.example wrangler.local.toml
 npm run d1:migrate:remote
 ```
 
-如果是从旧版本升级，同样运行这条迁移命令；`0002_users.sql` 会新增用户表和任务归属字段。
+如果是从旧版本升级，同样运行这条迁移命令；迁移会保留现有任务，并新增队列投递作业表。
+
+### 2.1 创建邮件投递队列
+
+提醒邮件通过 Cloudflare Queues 异步发送，需要创建主队列和死信队列：
+
+```bash
+npx wrangler queues create personal-mail-reminder-delivery
+npx wrangler queues create personal-mail-reminder-delivery-dlq
+```
+
+`wrangler.toml` 和 `wrangler.local.toml.example` 已绑定：
+
+- `REMINDER_QUEUE`：Cron 把到期提醒写入这个队列。
+- `personal-mail-reminder-delivery` consumer：批量发信并自动重试，积压时由 Cloudflare 自动扩展 consumer 并发。
+- `personal-mail-reminder-delivery-dlq` consumer：记录多次失败后的死信状态。
 
 ### 3. 配置 Worker 变量和域名
 
@@ -72,7 +109,7 @@ npm run d1:migrate:remote
 在 Worker 的 Variables 中配置：
 
 - `TIMEZONE`：例如 `Asia/Shanghai`。
-- `FROM_EMAIL`：例如 `个人提醒助手 <reminder@your-domain.com>`。
+- `FROM_EMAIL`：例如 `邮件铃 <reminder@your-domain.com>`。
 - `REPLY_EMAIL`：例如 `reminder@your-domain.com`。
 - `EMAIL_DELIVERY`：生产环境可设为 `resend`，本地开发默认是 `log`。
 - `LINUXDO_CLIENT_ID`：Linux.do OAuth 应用的 client id。
@@ -134,7 +171,7 @@ npm run deploy
 打开页面后可以选择：
 
 - 用户登录：使用已注册的邮箱和密码进入自己的提醒列表。
-- 注册：普通用户可以直接用邮箱和密码注册，或使用 Linux.do OAuth 登录。注册后最多创建 5 个任务。
+- 注册：普通用户可以直接用邮箱和密码注册，也可以使用 Linux.do OAuth 登录。注册后最多创建 5 个任务。
 - 管理员：使用 `ADMIN_TOKEN` 进入管理台，可查看和管理全部任务、用户、注册开关、邀请码、公告和最近 30 天日志，并手动触发到期检查。
 
 管理员可以在“设置”里关闭注册、开启一次性邀请码、批量生成邀请码、设置邀请码过期时间、维护公告。邀请码一人一码，使用后不能重复使用，过期后也不能使用。封禁用户后，该用户不能登录，现有提醒任务会全部失效；删除用户会清理该用户的任务、提醒轮次、发送记录和用户侧日志。
@@ -195,11 +232,14 @@ npm run tail
 项目结构：
 
 ```text
-src/index.ts              Worker 入口、定时任务、管理 API、回信处理
-src/admin-page.ts         管理台页面
-migrations/0001_init.sql  D1 数据库结构
+src/index.ts              Worker 入口、管理 API、定时任务和回信处理
+src/index.test.ts         Worker 逻辑和 OAuth 流程测试
+client/src/App.tsx        React 前端界面
+client/src/styles.css     前端样式
+migrations/               D1 数据库迁移
 scripts/                  配置、检查和测试数据脚本
-wrangler.toml             Cloudflare Worker 配置
+wrangler.toml             公开安全的 Cloudflare Worker 配置
+wrangler.local.toml       本地私有部署配置，不提交到仓库
 ```
 
 ## 许可证
