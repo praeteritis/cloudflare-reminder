@@ -5,3 +5,5 @@ TIMEZONE=Asia/Shanghai
 FROM_EMAIL="Personal Reminder <reminder@example.com>"
 REPLY_EMAIL=reminder@example.com
 # HEARTBEAT_URL=https://example.com/ping/...
+# LINUXDO_CLIENT_ID=your-linuxdo-client-id
+# LINUXDO_CLIENT_SECRET=your-linuxdo-client-secret

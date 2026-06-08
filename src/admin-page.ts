@@ -97,6 +97,30 @@ export const LOGIN_PAGE_HTML = `<!doctype html>
       padding: 18px 20px 20px;
     }
 
+    .tabs {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 4px;
+      margin: 18px 20px 0;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #eef2f7;
+    }
+
+    .tab {
+      min-height: 34px;
+      border-color: transparent;
+      background: transparent;
+      color: var(--muted);
+    }
+
+    .tab[aria-pressed="true"] {
+      border-color: var(--line-strong);
+      background: #fff;
+      color: var(--teal);
+    }
+
     label {
       display: grid;
       gap: 7px;
@@ -168,6 +192,10 @@ export const LOGIN_PAGE_HTML = `<!doctype html>
     .notice.show {
       display: flex;
     }
+
+    .hidden {
+      display: none;
+    }
   </style>
 </head>
 <body>
@@ -175,16 +203,71 @@ export const LOGIN_PAGE_HTML = `<!doctype html>
     <div class="head">
       <div class="mark">R</div>
       <div>
-        <h1>管理员入口</h1>
+          <h1>邮件提醒入口</h1>
         <div class="sub">personal-mail-reminder</div>
       </div>
     </div>
 
-    <form id="login-form">
+    <div class="tabs" aria-label="登录方式">
+      <button class="tab" type="button" data-mode="user-login" aria-pressed="true">用户登录</button>
+      <button class="tab" type="button" data-mode="register" aria-pressed="false">注册</button>
+      <button class="tab" type="button" data-mode="admin" aria-pressed="false">管理员</button>
+    </div>
+
+    <form id="user-login-form" class="auth-form" data-mode="user-login">
+      <div id="user-login-notice" class="notice" role="status"></div>
+      <label>
+        邮箱
+        <input id="user-login-email" type="email" autocomplete="email" autofocus required>
+      </label>
+      <label>
+        密码
+        <input id="user-login-password" type="password" autocomplete="current-password" required>
+      </label>
+      <label class="remember">
+        <input id="user-login-remember" type="checkbox">
+        记住登录
+      </label>
+      <button id="user-login-button" type="submit">登录</button>
+      <button id="user-linuxdo-button" type="button">使用 Linux.do 登录</button>
+    </form>
+
+    <form id="register-form" class="auth-form hidden" data-mode="register">
+      <div id="register-notice" class="notice" role="status"></div>
+      <label>
+        邮箱
+        <input id="register-email" type="email" autocomplete="email" required>
+      </label>
+      <label>
+        密码
+        <input id="register-password" type="password" autocomplete="new-password" minlength="8" required>
+      </label>
+      <label id="register-invite-row" class="hidden">
+        邀请码
+        <input id="register-invite-code" type="text" autocomplete="off">
+      </label>
+      <label class="remember">
+        <input id="register-remember" type="checkbox" checked>
+        记住登录
+      </label>
+      <button id="register-button" type="submit">注册并进入</button>
+      <button id="register-linuxdo-button" type="button">使用 Linux.do 登录</button>
+    </form>
+
+    <form id="linuxdo-complete-form" class="auth-form hidden" data-mode="linuxdo-complete">
+      <div id="linuxdo-complete-notice" class="notice" role="status"></div>
+      <label>
+        邀请码
+        <input id="linuxdo-complete-invite-code" type="text" autocomplete="off" required>
+      </label>
+      <button id="linuxdo-complete-button" type="submit">完成 Linux.do 注册</button>
+    </form>
+
+    <form id="login-form" class="auth-form hidden" data-mode="admin">
       <div id="login-notice" class="notice" role="status"></div>
       <label>
         Admin Token
-        <input id="admin-token" type="password" autocomplete="current-password" autofocus required>
+        <input id="admin-token" type="password" autocomplete="current-password" required>
       </label>
       <label class="remember">
         <input id="remember-login" type="checkbox">
@@ -195,25 +278,147 @@ export const LOGIN_PAGE_HTML = `<!doctype html>
   </section>
 
   <script>
+    window.REMINDER_LOGIN = __REMINDER_LOGIN_CONFIG__;
+  </script>
+  <script>
     (function () {
-      var form = document.getElementById('login-form');
-      var input = document.getElementById('admin-token');
-      var remember = document.getElementById('remember-login');
-      var button = document.getElementById('login-button');
-      var notice = document.getElementById('login-notice');
+      var config = window.REMINDER_LOGIN || { settings: {} };
+      var settings = config.settings || {};
+      var registerButton = document.getElementById('register-button');
+      var userLinuxdoButton = document.getElementById('user-linuxdo-button');
+      var registerLinuxdoButton = document.getElementById('register-linuxdo-button');
+      var inviteRow = document.getElementById('register-invite-row');
+      var pendingLinuxdoToken = new URLSearchParams(window.location.search).get('linuxdoPending') || '';
+      var linuxdoError = new URLSearchParams(window.location.search).get('linuxdoError') || '';
 
-      form.addEventListener('submit', function (event) {
+      inviteRow.classList.toggle('hidden', !settings.requireInvite);
+      registerButton.disabled = settings.allowRegistration === false;
+      if (settings.allowRegistration === false) {
+        registerButton.textContent = '注册暂未开放';
+      }
+
+      userLinuxdoButton.addEventListener('click', startLinuxdo);
+      registerLinuxdoButton.addEventListener('click', startLinuxdo);
+
+      if (pendingLinuxdoToken) {
+        setAuthMode('linuxdo-complete');
+        var pendingNotice = document.getElementById('linuxdo-complete-notice');
+        pendingNotice.textContent = 'Linux.do 授权成功，请填写邀请码完成注册。';
+        pendingNotice.className = 'notice show';
+      }
+
+      if (linuxdoError) {
+        var userNotice = document.getElementById('user-login-notice');
+        userNotice.textContent = linuxdoError;
+        userNotice.className = 'notice show';
+      }
+
+      document.querySelectorAll('.tab').forEach(function (tab) {
+        tab.addEventListener('click', function () {
+          setAuthMode(tab.getAttribute('data-mode') || 'user-login');
+        });
+      });
+
+      document.getElementById('linuxdo-complete-form').addEventListener('submit', function (event) {
+        event.preventDefault();
+        var notice = document.getElementById('linuxdo-complete-notice');
+        var button = document.getElementById('linuxdo-complete-button');
+        notice.className = 'notice';
+        button.disabled = true;
+        fetch('/auth/linuxdo/complete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            pendingToken: pendingLinuxdoToken,
+            inviteCode: document.getElementById('linuxdo-complete-invite-code').value.trim()
+          })
+        })
+          .then(function (response) {
+            return response.json().catch(function () {
+              return {};
+            }).then(function (payload) {
+              if (!response.ok || payload.ok === false) {
+                throw new Error(payload.error || '注册失败');
+              }
+              window.location.href = '/';
+            });
+          })
+          .catch(function (error) {
+            notice.textContent = error.message || String(error);
+            notice.className = 'notice show';
+            button.disabled = false;
+          });
+      });
+
+      function setAuthMode(mode) {
+        document.querySelectorAll('.tab').forEach(function (item) {
+          item.setAttribute('aria-pressed', String(item.getAttribute('data-mode') === mode));
+        });
+        document.querySelectorAll('.auth-form').forEach(function (form) {
+          form.classList.toggle('hidden', form.getAttribute('data-mode') !== mode);
+        });
+      }
+
+      function startLinuxdo() {
+        window.location.href = '/auth/linuxdo/start';
+      }
+
+      bindPasswordForm({
+        formId: 'user-login-form',
+        noticeId: 'user-login-notice',
+        buttonId: 'user-login-button',
+        path: '/auth/user-login',
+        payload: function () {
+          return {
+            email: document.getElementById('user-login-email').value.trim(),
+            password: document.getElementById('user-login-password').value,
+            remember: document.getElementById('user-login-remember').checked
+          };
+        }
+      });
+
+      bindPasswordForm({
+        formId: 'register-form',
+        noticeId: 'register-notice',
+        buttonId: 'register-button',
+        path: '/auth/register',
+        payload: function () {
+          return {
+            email: document.getElementById('register-email').value.trim(),
+            password: document.getElementById('register-password').value,
+            inviteCode: document.getElementById('register-invite-code').value.trim(),
+            remember: document.getElementById('register-remember').checked
+          };
+        }
+      });
+
+      bindPasswordForm({
+        formId: 'login-form',
+        noticeId: 'login-notice',
+        buttonId: 'login-button',
+        path: '/auth/login',
+        payload: function () {
+          return {
+            token: document.getElementById('admin-token').value.trim(),
+            remember: document.getElementById('remember-login').checked
+          };
+        }
+      });
+
+      function bindPasswordForm(options) {
+        var form = document.getElementById(options.formId);
+        var button = document.getElementById(options.buttonId);
+        var notice = document.getElementById(options.noticeId);
+
+        form.addEventListener('submit', function (event) {
         event.preventDefault();
         notice.className = 'notice';
         button.disabled = true;
 
-        fetch('/auth/login', {
+        fetch(options.path, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            token: input.value.trim(),
-            remember: remember.checked
-          })
+          body: JSON.stringify(options.payload())
         })
           .then(function (response) {
             return response.json().catch(function () {
@@ -230,7 +435,8 @@ export const LOGIN_PAGE_HTML = `<!doctype html>
             notice.className = 'notice show';
             button.disabled = false;
           });
-      });
+        });
+      }
     })();
   </script>
 </body>
@@ -350,7 +556,7 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
       top: 0;
       z-index: 10;
       display: grid;
-      grid-template-columns: minmax(180px, 1fr) minmax(240px, 560px);
+      grid-template-columns: minmax(180px, 1fr) minmax(0, 560px);
       gap: 18px;
       align-items: center;
       padding: 14px clamp(16px, 3vw, 34px);
@@ -394,20 +600,37 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
     }
 
     .tokenbar {
-      display: grid;
-      grid-template-columns: 1fr auto auto;
+      display: flex;
+      justify-content: flex-end;
       gap: 8px;
       align-items: end;
+      min-width: 0;
     }
 
     .account-status {
       min-height: 40px;
-      display: flex;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
       align-items: center;
       justify-content: flex-end;
+      gap: 6px;
+      min-width: 0;
+      max-width: min(430px, 52vw);
+      flex: 0 1 auto;
       color: var(--muted);
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 12px;
+    }
+
+    .account-email {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .account-usage {
+      white-space: nowrap;
     }
 
     .remember {
@@ -460,10 +683,51 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
     .main {
       display: grid;
       grid-template-columns: minmax(320px, 430px) minmax(0, 1fr);
-      gap: 18px;
+      column-gap: 18px;
+      row-gap: 10px;
+      align-content: start;
+      grid-auto-rows: max-content;
       width: min(1480px, 100%);
       margin: 0 auto;
       padding: 18px clamp(14px, 3vw, 34px) 34px;
+    }
+
+    .view-tabs {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      align-self: start;
+      gap: 4px;
+      flex-wrap: wrap;
+      width: fit-content;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #eef2f7;
+    }
+
+    .view-tab {
+      min-height: 34px;
+      height: 34px;
+      padding: 0 14px;
+      border-color: transparent;
+      background: transparent;
+      color: var(--muted);
+    }
+
+    .view-tab[aria-pressed="true"] {
+      border-color: var(--teal);
+      background: #fff;
+      color: var(--teal);
+      font-weight: 800;
+    }
+
+    .full-view {
+      grid-column: 1 / -1;
+    }
+
+    .app-view {
+      align-self: start;
     }
 
     .stack {
@@ -665,6 +929,101 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
       background: rgba(255, 255, 255, 0.72);
     }
 
+    .table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    .table th,
+    .table td {
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .table th {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    .settings-grid {
+      display: grid;
+      gap: 14px;
+      padding: 16px;
+    }
+
+    .pager {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 0 14px 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .pager button {
+      min-height: 32px;
+      padding: 0 10px;
+    }
+
+    .announcement-bar {
+      grid-column: 1 / -1;
+      display: none;
+      padding: 12px 14px;
+      border: 1px solid rgba(15, 118, 110, 0.24);
+      border-radius: 8px;
+      background: var(--teal-soft);
+      color: var(--ink);
+      font-size: 14px;
+      font-weight: 750;
+      overflow-wrap: anywhere;
+    }
+
+    .announcement-bar.show {
+      display: block;
+    }
+
+    .icon-button {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      padding: 0;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-weight: 900;
+    }
+
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: grid;
+      place-items: center;
+      padding: 22px;
+      background: rgba(28, 34, 43, 0.32);
+    }
+
+    .modal {
+      width: min(520px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .modal-body {
+      padding: 16px;
+      color: var(--ink);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
     .filters {
       display: flex;
       gap: 6px;
@@ -834,7 +1193,7 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
       }
 
       .tokenbar {
-        grid-template-columns: 1fr auto auto;
+        grid-template-columns: 1fr auto auto auto;
       }
 
       .remember {
@@ -872,7 +1231,8 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
       </div>
 
       <div class="tokenbar">
-        <div class="account-status">session verified</div>
+        <div id="account-status" class="account-status">session verified</div>
+        <button id="announcement-button" class="icon-button hidden" type="button" aria-label="查看公告" title="查看公告">!</button>
         <a class="github-link" href="https://github.com/maya1900/cloudflare-reminder" target="_blank" rel="noreferrer" aria-label="打开 GitHub 仓库" title="GitHub 仓库">
           <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
             <path d="M12 2C6.48 2 2 6.58 2 12.26c0 4.54 2.86 8.39 6.84 9.75.5.09.68-.22.68-.49 0-.24-.01-1.05-.01-1.9-2.78.62-3.37-1.22-3.37-1.22-.45-1.19-1.11-1.51-1.11-1.51-.91-.64.07-.63.07-.63 1 .07 1.53 1.06 1.53 1.06.89 1.56 2.34 1.11 2.91.85.09-.66.35-1.11.63-1.37-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.27 2.75 1.05A9.35 9.35 0 0 1 12 6.98c.85 0 1.71.12 2.51.34 1.91-1.32 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.8-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.81 0 .27.18.59.69.49A10.11 10.11 0 0 0 22 12.26C22 6.58 17.52 2 12 2Z" />
@@ -883,7 +1243,16 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
     </header>
 
     <main class="main">
-      <div class="stack">
+      <div id="app-announcement" class="announcement-bar"></div>
+      <nav class="view-tabs" aria-label="后台视图">
+        <button class="view-tab" type="button" data-view="tasks" aria-pressed="true">任务</button>
+        <button class="view-tab" type="button" data-view="users" data-admin-only="true" aria-pressed="false">用户</button>
+        <button class="view-tab" type="button" data-view="settings" data-admin-only="true" aria-pressed="false">设置</button>
+        <button class="view-tab" type="button" data-view="announcement" data-admin-only="true" aria-pressed="false">公告</button>
+        <button class="view-tab" type="button" data-view="logs" aria-pressed="false">日志</button>
+      </nav>
+
+      <div class="stack app-view" data-view-panel="tasks">
         <section class="panel">
           <div class="panel-head">
             <h2 id="form-title" class="panel-title">新建提醒</h2>
@@ -1019,7 +1388,7 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
         </section>
       </div>
 
-      <section class="panel">
+      <section class="panel app-view" data-view-panel="tasks">
         <div class="toolbar">
           <div class="filters" aria-label="任务状态">
             <button class="filter" type="button" data-status="all" aria-pressed="true">全部</button>
@@ -1029,7 +1398,7 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
             <button class="filter" type="button" data-status="cancelled" aria-pressed="false">已取消</button>
           </div>
           <div class="actions">
-            <button id="process-due" class="quiet" type="button">触发检查</button>
+            <button id="process-due" class="quiet" type="button" data-admin-only="true">触发检查</button>
             <button id="refresh-tasks" class="primary" type="button">刷新</button>
           </div>
         </div>
@@ -1038,15 +1407,133 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
           <div class="empty">加载中</div>
         </div>
       </section>
+
+      <section class="panel full-view app-view hidden" data-view-panel="users" data-admin-only="true">
+        <div class="toolbar">
+          <h2 class="panel-title">用户管理</h2>
+          <button id="refresh-users" class="primary" type="button">刷新</button>
+        </div>
+        <div id="users-table" class="tasks">
+          <div class="empty">加载中</div>
+        </div>
+        <div id="users-pager" class="pager"></div>
+      </section>
+
+      <section class="panel full-view app-view hidden" data-view-panel="settings" data-admin-only="true">
+        <div class="panel-head">
+          <h2 class="panel-title">系统设置</h2>
+        </div>
+        <form id="settings-form" class="settings-grid">
+          <div id="settings-notice" class="notice" role="status"></div>
+          <label class="checkline">
+            <input id="allow-registration" type="checkbox">
+            允许用户注册
+          </label>
+          <label class="checkline">
+            <input id="require-invite" type="checkbox">
+            注册需要邀请码
+          </label>
+          <div class="grid-2">
+            <label>
+              生成数量
+              <input id="invite-count" type="number" min="1" max="100" step="1" value="1">
+            </label>
+            <label>
+              过期时间
+              <input id="invite-expires-at" type="datetime-local">
+            </label>
+          </div>
+          <div class="actions">
+            <button id="generate-invite" class="quiet" type="button">生成邀请码</button>
+            <button id="refresh-invites" class="quiet" type="button">刷新邀请码</button>
+            <button id="delete-selected-invites" class="danger" type="button">删除选中</button>
+          </div>
+          <div id="invites-table" class="tasks">
+            <div class="empty">暂无邀请码</div>
+          </div>
+          <div id="invites-pager" class="pager"></div>
+          <div class="actions">
+            <button class="primary" type="submit">保存设置</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel full-view app-view hidden" data-view-panel="announcement" data-admin-only="true">
+        <div class="panel-head">
+          <h2 class="panel-title">公告</h2>
+        </div>
+        <form id="announcement-form" class="settings-grid">
+          <div id="announcement-notice" class="notice" role="status"></div>
+          <label>
+            公告内容
+            <textarea id="announcement-text" maxlength="1200"></textarea>
+          </label>
+          <div class="actions">
+            <button class="primary" type="submit">保存公告</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel full-view app-view hidden" data-view-panel="logs">
+        <div class="toolbar">
+          <div class="filters">
+            <select id="log-action-filter" aria-label="日志类型">
+              <option value="all">全部日志</option>
+              <option value="auth_register">注册</option>
+              <option value="auth_login">登录</option>
+              <option value="auth_linuxdo_login">Linux.do 登录</option>
+              <option value="task_create">创建任务</option>
+              <option value="task_update">编辑任务</option>
+              <option value="task_delete">删除任务</option>
+              <option value="email_send_success">邮件成功</option>
+              <option value="email_send_failed">邮件失败</option>
+              <option value="admin_user_ban">封禁用户</option>
+              <option value="admin_user_delete">删除用户</option>
+              <option value="admin_settings_update">设置变更</option>
+            </select>
+          </div>
+          <button id="refresh-logs" class="primary" type="button">刷新</button>
+        </div>
+        <div id="logs-table" class="tasks">
+          <div class="empty">加载中</div>
+        </div>
+        <div id="logs-pager" class="pager"></div>
+      </section>
     </main>
   </div>
 
+  <div id="announcement-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="announcement-title">
+    <section class="modal">
+      <div class="panel-head">
+        <h2 id="announcement-title" class="panel-title">公告</h2>
+        <button id="announcement-close" class="quiet" type="button">关闭</button>
+      </div>
+      <div id="announcement-modal-body" class="modal-body"></div>
+    </section>
+  </div>
+
+  <script>
+    window.REMINDER_APP = __REMINDER_APP_CONFIG__;
+  </script>
   <script>
     (function () {
+      var appConfig = window.REMINDER_APP || {
+        isAdmin: true,
+        userEmail: 'admin',
+        taskBasePath: '/admin/tasks'
+      };
       var form = document.getElementById('task-form');
       var formTitle = document.getElementById('form-title');
       var notice = document.getElementById('notice');
+      var settingsNotice = document.getElementById('settings-notice');
+      var announcementNotice = document.getElementById('announcement-notice');
       var tasksEl = document.getElementById('tasks');
+      var usersTable = document.getElementById('users-table');
+      var logsTable = document.getElementById('logs-table');
+      var invitesTable = document.getElementById('invites-table');
+      var usersPager = document.getElementById('users-pager');
+      var logsPager = document.getElementById('logs-pager');
+      var invitesPager = document.getElementById('invites-pager');
       var statusEl = document.getElementById('service-status');
       var submitTask = document.getElementById('submit-task');
       var resetForm = document.getElementById('reset-form');
@@ -1062,12 +1549,47 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
       var nagUnit = document.getElementById('nag-unit');
       var repeatAmount = document.getElementById('repeat-amount');
       var repeatUnit = document.getElementById('repeat-unit');
+      var processDue = document.getElementById('process-due');
+      var accountStatus = document.getElementById('account-status');
+      var appAnnouncement = document.getElementById('app-announcement');
+      var announcementButton = document.getElementById('announcement-button');
+      var announcementModal = document.getElementById('announcement-modal');
+      var announcementModalBody = document.getElementById('announcement-modal-body');
+      var taskBasePath = appConfig.taskBasePath || '/admin/tasks';
+      var settings = appConfig.settings || {};
       var filterStatus = 'all';
+      var activeView = 'tasks';
+      var announcementShown = false;
+      var usersPage = 1;
+      var invitesPage = 1;
+      var logsPage = 1;
+      var pageSize = 20;
       var dueMode = 'relative';
       var editingTaskId = null;
       var taskById = {};
       var nagTouched = false;
       var repeatTouched = false;
+
+      renderAccountStatus(0, 5);
+
+      renderAnnouncement(settings.announcementText || '');
+      hydrateSettingsForm(settings);
+
+      document.querySelectorAll('[data-admin-only="true"]').forEach(function (element) {
+        element.classList.toggle('hidden', !appConfig.isAdmin);
+      });
+      if (!appConfig.isAdmin) {
+        document.querySelectorAll('#log-action-filter option[value^="admin_"]').forEach(function (option) {
+          option.remove();
+        });
+      }
+      setView('tasks');
+
+      document.querySelectorAll('.view-tab').forEach(function (button) {
+        button.addEventListener('click', function () {
+          setView(button.getAttribute('data-view') || 'tasks');
+        });
+      });
 
       document.getElementById('logout').addEventListener('click', function () {
         fetch('/auth/logout', { method: 'POST' }).finally(function () {
@@ -1121,14 +1643,61 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
         loadTasks();
       });
 
-      document.getElementById('process-due').addEventListener('click', function () {
-        callApi('/admin/process-due', { method: 'POST' })
-          .then(function (summary) {
-            flash('ok', '已检查：新建 ' + summary.createdRuns + '，追提醒 ' + summary.nagReminders);
-            loadTasks();
-          })
-          .catch(showError);
+      document.getElementById('refresh-logs').addEventListener('click', function () {
+        loadLogs();
       });
+
+      document.getElementById('log-action-filter').addEventListener('change', function () {
+        logsPage = 1;
+        loadLogs();
+      });
+
+      document.getElementById('announcement-close').addEventListener('click', function () {
+        announcementModal.classList.add('hidden');
+      });
+
+      announcementButton.addEventListener('click', function () {
+        showAnnouncementModal();
+      });
+
+      if (appConfig.isAdmin) {
+        document.getElementById('refresh-users').addEventListener('click', function () {
+          loadUsers();
+        });
+
+        document.getElementById('settings-form').addEventListener('submit', function (event) {
+          event.preventDefault();
+          saveSettings();
+        });
+
+        document.getElementById('announcement-form').addEventListener('submit', function (event) {
+          event.preventDefault();
+          saveAnnouncement();
+        });
+
+        document.getElementById('generate-invite').addEventListener('click', function () {
+          createInvite();
+        });
+
+        document.getElementById('refresh-invites').addEventListener('click', function () {
+          loadInvites();
+        });
+
+        document.getElementById('delete-selected-invites').addEventListener('click', function () {
+          deleteSelectedInvites();
+        });
+      }
+
+      if (processDue) {
+        processDue.addEventListener('click', function () {
+          callApi('/admin/process-due', { method: 'POST' })
+            .then(function (summary) {
+              flash('ok', '已检查：新建 ' + summary.createdRuns + '，追提醒 ' + summary.nagReminders);
+              loadTasks();
+            })
+            .catch(showError);
+        });
+      }
 
       document.querySelectorAll('.filter').forEach(function (button) {
         button.addEventListener('click', function () {
@@ -1145,8 +1714,8 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
         var payload = buildPayload();
         var isEditing = Boolean(editingTaskId);
         var path = isEditing
-          ? '/admin/tasks/' + encodeURIComponent(editingTaskId)
-          : '/admin/tasks';
+          ? taskBasePath + '/' + encodeURIComponent(editingTaskId)
+          : taskBasePath;
         callApi(path, {
           method: isEditing ? 'PATCH' : 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1177,7 +1746,20 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
           return;
         }
 
-        callApi('/admin/tasks/' + encodeURIComponent(taskId) + '/' + action, { method: 'POST' })
+        if (action === 'delete') {
+          if (!window.confirm('确认删除这个任务？')) {
+            return;
+          }
+          callApi(taskBasePath + '/' + encodeURIComponent(taskId), { method: 'DELETE' })
+            .then(function () {
+              flash('ok', '任务已删除');
+              loadTasks();
+            })
+            .catch(showError);
+          return;
+        }
+
+        callApi(taskBasePath + '/' + encodeURIComponent(taskId) + '/' + action, { method: 'POST' })
           .then(function () {
             flash('ok', '任务已更新');
             loadTasks();
@@ -1187,6 +1769,67 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
 
       loadTasks();
       syncRelativeDefaults();
+
+      function setView(view) {
+        if (!appConfig.isAdmin && view !== 'tasks' && view !== 'logs') {
+          view = 'tasks';
+        }
+        activeView = view;
+        document.querySelectorAll('.view-tab').forEach(function (button) {
+          button.setAttribute('aria-pressed', String(button.getAttribute('data-view') === view));
+        });
+        document.querySelectorAll('[data-view-panel]').forEach(function (panel) {
+          panel.classList.toggle('hidden', panel.getAttribute('data-view-panel') !== view);
+        });
+        if (view === 'users') {
+          loadUsers();
+        }
+        if (view === 'settings') {
+          loadSettings();
+          loadInvites();
+        }
+        if (view === 'announcement') {
+          loadSettings();
+        }
+        if (view === 'logs') {
+          loadLogs();
+        }
+      }
+
+      function renderAnnouncement(text) {
+        if (!text) {
+          appAnnouncement.className = 'announcement-bar';
+          appAnnouncement.textContent = '';
+          announcementButton.classList.add('hidden');
+          announcementModal.classList.add('hidden');
+          return;
+        }
+        appAnnouncement.className = 'announcement-bar';
+        appAnnouncement.textContent = '';
+        announcementModalBody.textContent = text;
+        announcementButton.classList.remove('hidden');
+        if (!announcementShown) {
+          announcementShown = true;
+          showAnnouncementModal();
+        }
+      }
+
+      function showAnnouncementModal() {
+        if (!settings.announcementText) {
+          return;
+        }
+        announcementModalBody.textContent = settings.announcementText;
+        announcementModal.classList.remove('hidden');
+      }
+
+      function hydrateSettingsForm(nextSettings) {
+        if (!appConfig.isAdmin) {
+          return;
+        }
+        document.getElementById('allow-registration').checked = nextSettings.allowRegistration !== false;
+        document.getElementById('require-invite').checked = nextSettings.requireInvite === true;
+        document.getElementById('announcement-text').value = nextSettings.announcementText || '';
+      }
 
       function resetEditor() {
         form.reset();
@@ -1365,11 +2008,361 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
           });
       }
 
+      function loadSettings() {
+        if (!appConfig.isAdmin) {
+          return;
+        }
+        callApi('/admin/settings')
+          .then(function (payload) {
+            settings = payload.settings || {};
+            hydrateSettingsForm(settings);
+            renderAnnouncement(settings.announcementText || '');
+          })
+          .catch(showError);
+      }
+
+      function saveSettings() {
+        showPanelNotice(settingsNotice, 'ok', '正在保存设置...');
+        callApi('/admin/settings', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            allowRegistration: document.getElementById('allow-registration').checked,
+            requireInvite: document.getElementById('require-invite').checked
+          })
+        })
+          .then(function (payload) {
+            settings = payload.settings || {};
+            hydrateSettingsForm(settings);
+            showPanelNotice(settingsNotice, 'ok', '设置已保存');
+            flash('ok', '设置已保存');
+          })
+          .catch(function (error) {
+            showPanelNotice(settingsNotice, 'error', error.message || String(error));
+            showError(error);
+          });
+      }
+
+      function saveAnnouncement() {
+        showPanelNotice(announcementNotice, 'ok', '正在保存公告...');
+        callApi('/admin/settings', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            announcementText: document.getElementById('announcement-text').value.trim()
+          })
+        })
+          .then(function (payload) {
+            settings = payload.settings || {};
+            hydrateSettingsForm(settings);
+            renderAnnouncement(settings.announcementText || '');
+            showPanelNotice(announcementNotice, 'ok', '公告已保存');
+            flash('ok', '公告已保存');
+          })
+          .catch(function (error) {
+            showPanelNotice(announcementNotice, 'error', error.message || String(error));
+            showError(error);
+          });
+      }
+
+      function loadInvites() {
+        if (!appConfig.isAdmin) {
+          return;
+        }
+        invitesTable.innerHTML = '<div class="empty">加载中</div>';
+        callApi('/admin/invites?page=' + invitesPage + '&pageSize=' + pageSize)
+          .then(function (payload) {
+            renderInvites(payload.invites || []);
+            renderPager(invitesPager, payload.page, function (nextPage) {
+              invitesPage = nextPage;
+              loadInvites();
+            });
+          })
+          .catch(function (error) {
+            invitesTable.innerHTML = '<div class="empty">' + escapeHtml(error.message) + '</div>';
+            showError(error);
+          });
+      }
+
+      function createInvite() {
+        var expiresAt = document.getElementById('invite-expires-at').value;
+        callApi('/admin/invites', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            count: Number(document.getElementById('invite-count').value || 1),
+            expiresAt: expiresAt ? new Date(expiresAt).toISOString() : ''
+          })
+        })
+          .then(function (payload) {
+            var count = payload.invites ? payload.invites.length : 1;
+            flash('ok', '已生成 ' + count + ' 个邀请码');
+            loadInvites();
+          })
+          .catch(showError);
+      }
+
+      function renderInvites(invites) {
+        if (!invites.length) {
+          invitesTable.innerHTML = '<div class="empty">暂无邀请码</div>';
+          return;
+        }
+
+        invitesTable.innerHTML = '<table class="table"><thead><tr>' +
+          '<th><input id="select-all-invites" type="checkbox" aria-label="选择本页全部邀请码"></th><th>邀请码</th><th>状态</th><th>使用者</th><th>过期时间</th><th>创建时间</th><th>操作</th>' +
+          '</tr></thead><tbody>' +
+          invites.map(function (invite) {
+            var used = Boolean(invite.usedAtUtc);
+            var expired = Boolean(invite.expired);
+            var code = escapeAttribute(invite.code);
+            var action = used
+              ? ''
+              : '<button class="danger" type="button" data-invite-action="delete" data-invite-code="' + code + '">删除</button>';
+            var status = used ? '已使用' : expired ? '已过期' : '未使用';
+            var selectable = used ? 'disabled' : '';
+            return '<tr>' +
+              '<td><input class="invite-select" type="checkbox" value="' + code + '" ' + selectable + '></td>' +
+              '<td><strong>' + escapeHtml(invite.code) + '</strong></td>' +
+              '<td>' + status + '</td>' +
+              '<td>' + escapeHtml(invite.usedByEmail || '-') + '</td>' +
+              '<td>' + formatTime(invite.expiresAtUtc) + '</td>' +
+              '<td>' + formatTime(invite.createdAtUtc) + '</td>' +
+              '<td>' + action + '</td>' +
+              '</tr>';
+          }).join('') +
+          '</tbody></table>';
+      }
+
+      function deleteSelectedInvites() {
+        var codes = Array.from(document.querySelectorAll('.invite-select:checked')).map(function (input) {
+          return input.value;
+        });
+        if (!codes.length) {
+          flash('error', '请选择要删除的邀请码');
+          return;
+        }
+        if (!window.confirm('确认删除选中的 ' + codes.length + ' 个未使用邀请码？')) {
+          return;
+        }
+        callApi('/admin/invites/batch-delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ codes: codes })
+        })
+          .then(function (payload) {
+            flash('ok', '已删除 ' + Number(payload.deleted || 0) + ' 个，跳过 ' + Number(payload.skipped || 0) + ' 个');
+            loadInvites();
+          })
+          .catch(showError);
+      }
+
+      function renderPager(container, page, onChange) {
+        if (!page) {
+          container.innerHTML = '';
+          return;
+        }
+        container.innerHTML =
+          '<button class="quiet" type="button" data-page="prev" ' + (page.hasPrev ? '' : 'disabled') + '>上一页</button>' +
+          '<span>第 ' + Number(page.page || 1) + ' / ' + Number(page.totalPages || 1) + ' 页，共 ' + Number(page.total || 0) + ' 条</span>' +
+          '<button class="quiet" type="button" data-page="next" ' + (page.hasNext ? '' : 'disabled') + '>下一页</button>';
+
+        container.onclick = function (event) {
+          var target = event.target;
+          if (!(target instanceof HTMLElement)) {
+            return;
+          }
+          var direction = target.getAttribute('data-page');
+          if (!direction) {
+            return;
+          }
+          onChange(direction === 'prev' ? Number(page.page || 1) - 1 : Number(page.page || 1) + 1);
+        };
+      }
+
+      invitesTable.addEventListener('click', function (event) {
+        var target = event.target;
+        if (!(target instanceof HTMLElement)) {
+          return;
+        }
+        var action = target.getAttribute('data-invite-action');
+        var code = target.getAttribute('data-invite-code');
+        if (action !== 'delete' || !code) {
+          return;
+        }
+        if (!window.confirm('确认删除这个未使用的邀请码？')) {
+          return;
+        }
+        callApi('/admin/invites/' + encodeURIComponent(code), { method: 'DELETE' })
+          .then(loadInvites)
+          .catch(showError);
+      });
+
+      invitesTable.addEventListener('change', function (event) {
+        var target = event.target;
+        if (!(target instanceof HTMLInputElement) || target.id !== 'select-all-invites') {
+          return;
+        }
+        document.querySelectorAll('.invite-select:not(:disabled)').forEach(function (input) {
+          input.checked = target.checked;
+        });
+      });
+
+      function loadUsers() {
+        if (!appConfig.isAdmin) {
+          return;
+        }
+        usersTable.innerHTML = '<div class="empty">加载中</div>';
+        callApi('/admin/users?page=' + usersPage + '&pageSize=' + pageSize)
+          .then(function (payload) {
+            renderUsers(payload.users || []);
+            renderPager(usersPager, payload.page, function (nextPage) {
+              usersPage = nextPage;
+              loadUsers();
+            });
+          })
+          .catch(function (error) {
+            usersTable.innerHTML = '<div class="empty">' + escapeHtml(error.message) + '</div>';
+            showError(error);
+          });
+      }
+
+      function renderUsers(users) {
+        if (!users.length) {
+          usersTable.innerHTML = '<div class="empty">暂无用户</div>';
+          return;
+        }
+
+        usersTable.innerHTML = '<table class="table"><thead><tr>' +
+          '<th>用户</th><th>状态</th><th>任务</th><th>登录</th><th>操作</th>' +
+          '</tr></thead><tbody>' +
+          users.map(renderUserRow).join('') +
+          '</tbody></table>';
+      }
+
+      function renderUserRow(user) {
+        var id = escapeAttribute(user.id);
+        var provider = user.linuxdoUsername ? 'Linux.do @' + user.linuxdoUsername : '邮箱';
+        var actions = '<button class="quiet" type="button" data-user-action="edit" data-user-id="' + id + '">编辑</button>';
+        if (user.status === 'banned') {
+          actions += '<button class="primary" type="button" data-user-action="unban" data-user-id="' + id + '">解封</button>';
+        } else {
+          actions += '<button class="danger" type="button" data-user-action="ban" data-user-id="' + id + '">封禁</button>';
+        }
+        actions += '<button class="danger" type="button" data-user-action="delete" data-user-id="' + id + '">删除</button>';
+
+        return '<tr>' +
+          '<td><strong>' + escapeHtml(user.email) + '</strong><br><span class="guide-text">' + escapeHtml(provider) + '</span></td>' +
+          '<td>' + escapeHtml(user.status) + '</td>' +
+          '<td>' + Number(user.taskCount || 0) + '/' + Number(user.taskLimit || 5) + '</td>' +
+          '<td>' + formatTime(user.lastLoginAtUtc) + '</td>' +
+          '<td><div class="actions">' + actions + '</div></td>' +
+          '</tr>';
+      }
+
+      usersTable.addEventListener('click', function (event) {
+        var target = event.target;
+        if (!(target instanceof HTMLElement)) {
+          return;
+        }
+        var action = target.getAttribute('data-user-action');
+        var userId = target.getAttribute('data-user-id');
+        if (!action || !userId) {
+          return;
+        }
+        handleUserAction(action, userId);
+      });
+
+      function handleUserAction(action, userId) {
+        if (action === 'edit') {
+          var email = window.prompt('新的邮箱');
+          if (!email) return;
+          callApi('/admin/users/' + encodeURIComponent(userId), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email.trim() })
+          }).then(loadUsers).catch(showError);
+          return;
+        }
+        if (action === 'ban') {
+          var reason = window.prompt('封禁原因', '');
+          callApi('/admin/users/' + encodeURIComponent(userId) + '/ban', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ reason: reason || '' })
+          }).then(loadUsers).catch(showError);
+          return;
+        }
+        if (action === 'unban') {
+          callApi('/admin/users/' + encodeURIComponent(userId) + '/unban', { method: 'POST' })
+            .then(loadUsers)
+            .catch(showError);
+          return;
+        }
+        if (action === 'delete') {
+          if (!window.confirm('确认删除该用户及其所有数据？')) return;
+          callApi('/admin/users/' + encodeURIComponent(userId), { method: 'DELETE' })
+            .then(loadUsers)
+            .catch(showError);
+        }
+      }
+
+      function loadLogs() {
+        logsTable.innerHTML = '<div class="empty">加载中</div>';
+        var base = appConfig.isAdmin ? '/admin/logs' : '/user/logs';
+        var action = document.getElementById('log-action-filter').value || 'all';
+        callApi(base + '?action=' + encodeURIComponent(action) + '&page=' + logsPage + '&pageSize=' + pageSize)
+          .then(function (payload) {
+            renderLogs(payload.logs || []);
+            renderPager(logsPager, payload.page, function (nextPage) {
+              logsPage = nextPage;
+              loadLogs();
+            });
+          })
+          .catch(function (error) {
+            logsTable.innerHTML = '<div class="empty">' + escapeHtml(error.message) + '</div>';
+            showError(error);
+          });
+      }
+
+      function renderLogs(logs) {
+        if (!logs.length) {
+          logsTable.innerHTML = '<div class="empty">最近 30 天暂无日志</div>';
+          return;
+        }
+
+        logsTable.innerHTML = '<table class="table"><thead><tr>' +
+          '<th>时间</th><th>动作</th><th>操作者</th><th>对象</th><th>详情</th>' +
+          '</tr></thead><tbody>' +
+          logs.map(function (log) {
+            return '<tr>' +
+              '<td>' + formatTime(log.createdAtUtc) + '</td>' +
+              '<td>' + escapeHtml(log.action) + '</td>' +
+              '<td>' + escapeHtml(log.actorEmail || log.actorType || '-') + '</td>' +
+              '<td>' + escapeHtml((log.targetType || '-') + ':' + (log.targetId || '-')) + '</td>' +
+              '<td>' + escapeHtml(formatLogDetails(log.details)) + '</td>' +
+              '</tr>';
+          }).join('') +
+          '</tbody></table>';
+      }
+
+      function formatLogDetails(details) {
+        if (!details) return '';
+        if (typeof details === 'string') return details;
+        try {
+          return JSON.stringify(details);
+        } catch (error) {
+          return String(details);
+        }
+      }
+
       function loadTasks() {
         tasksEl.innerHTML = '<div class="empty">加载中</div>';
-        callApi('/admin/tasks?status=' + encodeURIComponent(filterStatus) + '&limit=50')
+        callApi(taskBasePath + '?status=' + encodeURIComponent(filterStatus) + '&limit=50')
           .then(function (payload) {
             renderTasks(payload.tasks || []);
+            if (!appConfig.isAdmin && payload.taskUsage) {
+              renderAccountStatus(Number(payload.taskUsage.used || 0), Number(payload.taskUsage.limit || 5));
+            }
             statusEl.textContent = 'updated ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
           })
           .catch(function (error) {
@@ -1392,6 +2385,19 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
         tasksEl.innerHTML = tasks.map(renderTask).join('');
       }
 
+      function renderAccountStatus(used, limit) {
+        if (appConfig.isAdmin) {
+          accountStatus.textContent = 'admin session';
+          accountStatus.title = 'admin session';
+          return;
+        }
+        var email = String(appConfig.userEmail || 'user');
+        var usage = Number(used || 0) + '/' + Number(limit || 5) + ' tasks';
+        accountStatus.title = email + ' / ' + usage;
+        accountStatus.innerHTML = '<span class="account-email">' + escapeHtml(email) + '</span>' +
+          '<span class="account-usage">' + escapeHtml(usage) + '</span>';
+      }
+
       function renderTask(task) {
         var statusClass = 'status-' + task.status;
         var recurrence = task.recurrenceType === 'interval'
@@ -1399,6 +2405,9 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
           : '一次性';
         var run = task.currentRun
           ? '<span class="pill">run ' + escapeHtml(task.currentRun.status || 'open') + ' / ' + Number(task.currentRun.sentCount || 0) + '</span>'
+          : '';
+        var owner = appConfig.isAdmin && task.userEmail
+          ? '<span class="pill">' + escapeHtml(task.userEmail) + '</span>'
           : '';
         var actions = renderActions(task);
 
@@ -1408,6 +2417,7 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
             '<p class="task-body">' + escapeHtml(task.body || '') + '</p>' +
             '<div class="meta">' +
               '<span class="pill ' + statusClass + '">' + statusLabel(task.status) + '</span>' +
+              owner +
               '<span class="pill">' + escapeHtml(task.recipientEmail) + '</span>' +
               '<span class="pill">下次 ' + formatTime(task.nextDueAtUtc) + '</span>' +
               '<span class="pill">' + recurrence + '</span>' +
@@ -1422,18 +2432,22 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
       function renderActions(task) {
         var id = escapeAttribute(task.id);
         var edit = '<button class="quiet" type="button" data-action="edit" data-task-id="' + id + '">编辑</button>';
+        var remove = '<button class="danger" type="button" data-action="delete" data-task-id="' + id + '">删除</button>';
         if (task.status === 'active') {
           return edit +
             '<button class="quiet" type="button" data-action="pause" data-task-id="' + id + '">暂停</button>' +
-            '<button class="danger" type="button" data-action="cancel" data-task-id="' + id + '">取消</button>';
+            '<button class="danger" type="button" data-action="cancel" data-task-id="' + id + '">取消</button>' +
+            remove;
         }
         if (task.status === 'paused') {
           return edit +
             '<button class="primary" type="button" data-action="resume" data-task-id="' + id + '">恢复</button>' +
-            '<button class="danger" type="button" data-action="cancel" data-task-id="' + id + '">取消</button>';
+            '<button class="danger" type="button" data-action="cancel" data-task-id="' + id + '">取消</button>' +
+            remove;
         }
         return edit +
-          '<button class="quiet" type="button" data-action="resume" data-task-id="' + id + '">重新激活</button>';
+          '<button class="quiet" type="button" data-action="resume" data-task-id="' + id + '">重新激活</button>' +
+          remove;
       }
 
       function statusLabel(status) {
@@ -1486,6 +2500,14 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
         flash('error', error.message || String(error));
       }
 
+      function showPanelNotice(element, type, message) {
+        if (!element) {
+          return;
+        }
+        element.className = 'notice show ' + type;
+        element.textContent = message;
+      }
+
       function escapeHtml(value) {
         return String(value)
           .replace(/&/g, '&amp;')
@@ -1503,8 +2525,29 @@ export const ADMIN_PAGE_HTML = `<!doctype html>
 </body>
 </html>`;
 
-export function renderAdminPage(): Response {
-  return new Response(ADMIN_PAGE_HTML, {
+export function renderAdminPage(
+  options: {
+    isAdmin?: boolean;
+    userEmail?: string;
+    settings?: {
+      allowRegistration?: boolean;
+      requireInvite?: boolean;
+      announcementText?: string;
+    };
+  } = {}
+): Response {
+  const isAdmin = options.isAdmin !== false;
+  const html = ADMIN_PAGE_HTML.replace(
+    "__REMINDER_APP_CONFIG__",
+    JSON.stringify({
+      isAdmin,
+      userEmail: options.userEmail || (isAdmin ? "admin" : "user"),
+      taskBasePath: isAdmin ? "/admin/tasks" : "/user/tasks",
+      settings: options.settings || {},
+    })
+  );
+
+  return new Response(html, {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
@@ -1512,8 +2555,21 @@ export function renderAdminPage(): Response {
   });
 }
 
-export function renderLoginPage(): Response {
-  return new Response(LOGIN_PAGE_HTML, {
+export function renderLoginPage(options: {
+  settings?: {
+    allowRegistration?: boolean;
+    requireInvite?: boolean;
+    announcementText?: string;
+  };
+} = {}): Response {
+  const html = LOGIN_PAGE_HTML.replace(
+    "__REMINDER_LOGIN_CONFIG__",
+    JSON.stringify({
+      settings: options.settings || {},
+    })
+  );
+
+  return new Response(html, {
     headers: {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",

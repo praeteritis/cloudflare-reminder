@@ -1,15 +1,205 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ADMIN_PAGE_HTML, LOGIN_PAGE_HTML } from "./admin-page";
+import { ADMIN_PAGE_HTML, LOGIN_PAGE_HTML, renderAdminPage } from "./admin-page";
+import worker from "./index";
 import {
   buildTaskFromAdminInput,
   buildTaskUpdateFromAdminInput,
   calculateNextNagAt,
   calculateNextDueAt,
+  assertNormalUserTaskLimit,
   extractRunId,
   formatInTimezone,
   getFirstMeaningfulLine,
   pingHeartbeat,
 } from "./index";
+
+interface MockUserRow {
+  id: string;
+  email: string;
+  password_hash: string;
+  password_salt: string;
+  status: "active" | "banned";
+  linuxdo_id: string | null;
+  linuxdo_username: string | null;
+  display_name: string | null;
+  avatar_url: string | null;
+  last_login_at_utc: string | null;
+  banned_at_utc: string | null;
+  banned_reason: string | null;
+  created_at_utc: string;
+  updated_at_utc: string;
+}
+
+interface MockInviteRow {
+  code: string;
+  used_by: string | null;
+  expires_at_utc: string | null;
+}
+
+interface MockPendingRow {
+  token: string;
+  provider: string;
+  profile_json: string;
+  expires_at_utc: string;
+  created_at_utc: string;
+}
+
+class MockD1Database {
+  settings = new Map<string, string>([
+    ["allow_registration", "true"],
+    ["require_invite", "true"],
+  ]);
+  users: MockUserRow[] = [];
+  invites: MockInviteRow[] = [{ code: "INVITE", used_by: null, expires_at_utc: "2099-01-01T00:00:00.000Z" }];
+  pending: MockPendingRow[] = [];
+
+  prepare(sql: string) {
+    return new MockD1Statement(this, sql);
+  }
+}
+
+class MockD1Statement {
+  private values: unknown[] = [];
+
+  constructor(
+    private readonly db: MockD1Database,
+    private readonly sql: string
+  ) {}
+
+  bind(...values: unknown[]) {
+    this.values = values;
+    return this;
+  }
+
+  async all<T>() {
+    if (this.sql.includes("FROM app_settings")) {
+      return {
+        results: Array.from(this.db.settings.entries()).map(([key, value]) => ({ key, value })) as T[],
+      };
+    }
+
+    return { results: [] as T[] };
+  }
+
+  async first<T>() {
+    const compactSql = this.sql.replace(/\s+/g, " ");
+
+    if (compactSql.includes("FROM users WHERE linuxdo_id")) {
+      return (this.db.users.find((user) => user.linuxdo_id === this.values[0]) ?? null) as T | null;
+    }
+
+    if (compactSql.includes("FROM users WHERE email")) {
+      return (this.db.users.find((user) => user.email === this.values[0]) ?? null) as T | null;
+    }
+
+    if (compactSql.includes("FROM users WHERE id")) {
+      return (this.db.users.find((user) => user.id === this.values[0]) ?? null) as T | null;
+    }
+
+    if (compactSql.includes("FROM invite_codes WHERE code")) {
+      return (this.db.invites.find((invite) => invite.code === this.values[0]) ?? null) as T | null;
+    }
+
+    if (compactSql.includes("FROM oauth_pending")) {
+      return (
+        this.db.pending.find((pending) => pending.token === this.values[0] && pending.provider === this.values[1]) ?? null
+      ) as T | null;
+    }
+
+    return null;
+  }
+
+  async run() {
+    const compactSql = this.sql.replace(/\s+/g, " ");
+
+    if (compactSql.includes("INSERT INTO oauth_pending")) {
+      const [token, provider, profileJson, expiresAtUtc, createdAtUtc] = this.values as string[];
+      this.db.pending.push({
+        token,
+        provider,
+        profile_json: profileJson,
+        expires_at_utc: expiresAtUtc,
+        created_at_utc: createdAtUtc,
+      });
+      return { meta: { changes: 1 } };
+    }
+
+    if (compactSql.includes("INSERT INTO users")) {
+      const [
+        id,
+        email,
+        passwordHash,
+        passwordSalt,
+        status,
+        linuxdoId,
+        linuxdoUsername,
+        displayName,
+        avatarUrl,
+        lastLoginAtUtc,
+        createdAtUtc,
+        updatedAtUtc,
+      ] = this.values as string[];
+      this.db.users.push({
+        id,
+        email,
+        password_hash: passwordHash,
+        password_salt: passwordSalt,
+        status: status as "active",
+        linuxdo_id: linuxdoId,
+        linuxdo_username: linuxdoUsername,
+        display_name: displayName,
+        avatar_url: avatarUrl,
+        last_login_at_utc: lastLoginAtUtc,
+        banned_at_utc: null,
+        banned_reason: null,
+        created_at_utc: createdAtUtc,
+        updated_at_utc: updatedAtUtc,
+      });
+      return { meta: { changes: 1 } };
+    }
+
+    if (compactSql.includes("UPDATE invite_codes")) {
+      const [usedBy, usedAtUtc, code] = this.values as string[];
+      const invite = this.db.invites.find((row) => row.code === code && row.used_by === null);
+      if (!invite) {
+        return { meta: { changes: 0 } };
+      }
+      invite.used_by = usedBy;
+      void usedAtUtc;
+      return { meta: { changes: 1 } };
+    }
+
+    if (compactSql.includes("DELETE FROM oauth_pending")) {
+      this.db.pending = this.db.pending.filter((pending) => pending.token !== this.values[0]);
+      return { meta: { changes: 1 } };
+    }
+
+    if (compactSql.includes("UPDATE users SET last_login_at_utc")) {
+      const [, updatedAtUtc, userId] = this.values as string[];
+      const user = this.db.users.find((row) => row.id === userId);
+      if (user) {
+        user.last_login_at_utc = updatedAtUtc;
+        user.updated_at_utc = updatedAtUtc;
+      }
+      return { meta: { changes: user ? 1 : 0 } };
+    }
+
+    return { meta: { changes: 1 } };
+  }
+}
+
+function makeEnv(db = new MockD1Database()) {
+  return {
+    DB: db,
+    RESEND_API_KEY: "test",
+    TIMEZONE: "Asia/Shanghai",
+    FROM_EMAIL: "noreply@example.com",
+    REPLY_EMAIL: "reply@example.com",
+    ADMIN_TOKEN: "secret",
+    LINUXDO_CLIENT_ID: "client",
+    LINUXDO_CLIENT_SECRET: "secret",
+  } as unknown as Parameters<typeof worker.fetch>[1];
+}
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -241,6 +431,74 @@ describe("admin task input", () => {
   });
 });
 
+describe("normal user task limits", () => {
+  it("allows normal users below the task limit", () => {
+    expect(() => assertNormalUserTaskLimit(4)).not.toThrow();
+  });
+
+  it("rejects normal users at the task limit", () => {
+    expect(() => assertNormalUserTaskLimit(5)).toThrow("普通用户最多只能创建 5 个任务");
+  });
+});
+
+describe("Linux.do OAuth flow", () => {
+  it("starts Linux.do OAuth without requiring an invite code first", async () => {
+    const response = await worker.fetch(new Request("https://reminder.test/auth/linuxdo/start"), makeEnv());
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toContain("https://connect.linux.do/oauth2/authorize");
+  });
+
+  it("redirects new Linux.do users to an invite completion step", async () => {
+    const db = new MockD1Database();
+    const env = makeEnv(db);
+    const start = await worker.fetch(new Request("https://reminder.test/auth/linuxdo/start"), env);
+    const state = new URL(start.headers.get("location") || "").searchParams.get("state");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "token" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ id: 42, username: "neo", name: "Neo" })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await worker.fetch(
+      new Request(`https://reminder.test/auth/linuxdo/callback?code=ok&state=${encodeURIComponent(state || "")}`),
+      env
+    );
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toContain("linuxdoPending=");
+    expect(db.pending).toHaveLength(1);
+    expect(db.users).toHaveLength(0);
+  });
+
+  it("completes pending Linux.do registration with an invite code", async () => {
+    const db = new MockD1Database();
+    db.pending.push({
+      token: "pending_1",
+      provider: "linuxdo",
+      profile_json: JSON.stringify({ id: 42, username: "neo", name: "Neo" }),
+      expires_at_utc: "2099-01-01T00:00:00.000Z",
+      created_at_utc: "2026-06-08T00:00:00.000Z",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://reminder.test/auth/linuxdo/complete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pendingToken: "pending_1", inviteCode: "INVITE" }),
+      }),
+      makeEnv(db)
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("set-cookie")).toContain("reminder_user=");
+    expect(response.headers.get("set-cookie")).toContain("SameSite=Lax");
+    expect(db.users).toHaveLength(1);
+    expect(db.invites[0].used_by).toBe(db.users[0].id);
+    expect(db.pending).toHaveLength(0);
+  });
+});
+
 describe("admin page", () => {
   it("serves a management UI wired to the admin task API", () => {
     expect(ADMIN_PAGE_HTML).toContain('id="task-form"');
@@ -251,11 +509,49 @@ describe("admin page", () => {
     expect(ADMIN_PAGE_HTML).toContain('id="relative-unit"');
     expect(ADMIN_PAGE_HTML).toContain('id="nag-unit"');
     expect(ADMIN_PAGE_HTML).toContain('id="repeat-unit"');
+    expect(ADMIN_PAGE_HTML).toContain('data-view="users"');
+    expect(ADMIN_PAGE_HTML).toContain('data-view="settings"');
+    expect(ADMIN_PAGE_HTML).toContain('data-view="logs"');
+    expect(ADMIN_PAGE_HTML).toContain('data-action="delete"');
+    expect(ADMIN_PAGE_HTML).toContain("/admin/users");
+    expect(ADMIN_PAGE_HTML).toContain("/admin/settings");
+    expect(ADMIN_PAGE_HTML).toContain("/admin/logs");
+    expect(ADMIN_PAGE_HTML).toContain("/admin/invites");
+    expect(ADMIN_PAGE_HTML).toContain('id="generate-invite"');
+    expect(ADMIN_PAGE_HTML).toContain('id="invite-count"');
+    expect(ADMIN_PAGE_HTML).toContain('id="invite-expires-at"');
+    expect(ADMIN_PAGE_HTML).toContain('id="delete-selected-invites"');
+    expect(ADMIN_PAGE_HTML).toContain('id="users-pager"');
+    expect(ADMIN_PAGE_HTML).toContain('id="invites-pager"');
+    expect(ADMIN_PAGE_HTML).toContain('id="logs-pager"');
+    expect(ADMIN_PAGE_HTML).toContain('id="settings-notice"');
+    expect(ADMIN_PAGE_HTML).toContain('id="announcement-notice"');
+    expect(ADMIN_PAGE_HTML).toContain('data-view="announcement"');
+    expect(ADMIN_PAGE_HTML).not.toContain('id="invite-code"');
+    expect(ADMIN_PAGE_HTML).toContain('id="announcement-button"');
+  });
+
+  it("renders a normal user task API configuration", async () => {
+    const response = renderAdminPage({ isAdmin: false, userEmail: "user@example.com" });
+    const html = await response.text();
+
+    expect(html).toContain('"taskBasePath":"/user/tasks"');
+    expect(html).toContain('"userEmail":"user@example.com"');
   });
 
   it("serves a login UI wired to token authentication", () => {
     expect(LOGIN_PAGE_HTML).toContain('id="login-form"');
+    expect(LOGIN_PAGE_HTML).toContain("邮件提醒入口");
+    expect(LOGIN_PAGE_HTML).not.toContain("管理员入口");
     expect(LOGIN_PAGE_HTML).toContain("/auth/login");
+    expect(LOGIN_PAGE_HTML).toContain("/auth/user-login");
+    expect(LOGIN_PAGE_HTML).toContain("/auth/register");
+    expect(LOGIN_PAGE_HTML).toContain("/auth/linuxdo/start");
+    expect(LOGIN_PAGE_HTML).toContain("/auth/linuxdo/complete");
+    expect(LOGIN_PAGE_HTML).toContain('id="user-linuxdo-button"');
+    expect(LOGIN_PAGE_HTML).toContain('id="linuxdo-complete-form"');
+    expect(LOGIN_PAGE_HTML).toContain('id="register-invite-code"');
+    expect(LOGIN_PAGE_HTML).not.toContain('id="login-announcement"');
     expect(LOGIN_PAGE_HTML).toContain("Admin Token");
   });
 });
