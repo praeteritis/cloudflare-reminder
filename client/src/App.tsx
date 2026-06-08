@@ -3,7 +3,9 @@ import {
   AlertCircle,
   Bell,
   Check,
+  Copy,
   ClipboardList,
+  Download,
   LogOut,
   Megaphone,
   Pause,
@@ -963,6 +965,9 @@ function SettingsPage({ onSettingsChange }: { onSettingsChange: () => Promise<vo
   const [page, setPage] = useState<PagePayload | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [selected, setSelected] = useState<string[]>([]);
+  const [inviteModalOpen, setInviteModalOpen] = useState(false);
+  const [inviteExpireOption, setInviteExpireOption] = useState("30");
+  const [generatedInvites, setGeneratedInvites] = useState<InviteRow[]>([]);
   const [notice, setNotice] = useState<Notice | null>(null);
 
   const loadSettings = useCallback(async () => {
@@ -1008,19 +1013,52 @@ function SettingsPage({ onSettingsChange }: { onSettingsChange: () => Promise<vo
     event.preventDefault();
     const data = new FormData(event.currentTarget);
     try {
-      const expiresAt = String(data.get("expiresAt") || "");
+      const expiresAt = inviteExpirationFromDays(data);
       const payload = await api<{ invites: InviteRow[] }>("/admin/invites", {
         method: "POST",
         body: {
           count: Number(data.get("count") || 1),
-          expiresAt: expiresAt ? new Date(expiresAt).toISOString() : "",
+          expiresAt,
         },
       });
-      setNotice({ type: "ok", message: `已生成 ${payload.invites?.length || 1} 个邀请码` });
-      await loadInvites();
+      const nextInvites = payload.invites || [];
+      setGeneratedInvites(nextInvites);
+      setNotice({ type: "ok", message: `已生成 ${nextInvites.length || 1} 个邀请码` });
+      if (currentPage !== 1) {
+        setCurrentPage(1);
+      } else {
+        await loadInvites();
+      }
     } catch (error) {
       setNotice({ type: "error", message: errorMessage(error) });
     }
+  }
+
+  async function copyInviteCode(code: string) {
+    try {
+      await copyText(code);
+      setNotice({ type: "ok", message: "邀请码已复制" });
+    } catch (error) {
+      setNotice({ type: "error", message: errorMessage(error) });
+    }
+  }
+
+  async function copyGeneratedInvites() {
+    const text = generatedInvites.map((invite) => invite.code).join("\n");
+    if (!text) return;
+    try {
+      await copyText(text);
+      setNotice({ type: "ok", message: "已复制本次生成的邀请码" });
+    } catch (error) {
+      setNotice({ type: "error", message: errorMessage(error) });
+    }
+  }
+
+  function downloadGeneratedInvites() {
+    const text = generatedInvites.map((invite) => invite.code).join("\n");
+    if (!text) return;
+    downloadText(`invite-codes-${new Date().toISOString().slice(0, 10)}.txt`, text);
+    setNotice({ type: "ok", message: "邀请码文件已下载" });
   }
 
   async function deleteInvites(codes: string[]) {
@@ -1077,25 +1115,75 @@ function SettingsPage({ onSettingsChange }: { onSettingsChange: () => Promise<vo
             <h2>邀请码</h2>
             <p>批量生成、分页查看和批量删除</p>
           </div>
-        </div>
-        <form className="invite-form" onSubmit={createInvites}>
-          <label>
-            数量
-            <input name="count" type="number" min="1" max="100" defaultValue="1" />
-          </label>
-          <label>
-            过期时间
-            <input name="expiresAt" type="datetime-local" />
-          </label>
-          <button className="primary icon-text" type="submit">
+          <button
+            className="primary icon-text"
+            type="button"
+            onClick={() => {
+              setGeneratedInvites([]);
+              setInviteExpireOption("30");
+              setInviteModalOpen(true);
+            }}
+          >
             <Plus size={16} />
             生成
           </button>
+        </div>
+        <div className="invite-toolbar">
           <button className="danger icon-text" type="button" onClick={() => deleteInvites(selected)}>
             <Trash2 size={16} />
             删除选中
           </button>
-        </form>
+        </div>
+        {inviteModalOpen && (
+          <Modal title="生成邀请码" onClose={() => setInviteModalOpen(false)}>
+            <form className="invite-form" onSubmit={createInvites}>
+              <label>
+                数量
+                <input name="count" type="number" min="1" max="100" defaultValue="1" />
+              </label>
+              <label>
+                过期天数
+                <select name="expiresInDays" value={inviteExpireOption} onChange={(event) => setInviteExpireOption(event.target.value)}>
+                  <option value="">不过期</option>
+                  <option value="1">1 天</option>
+                  <option value="7">7 天</option>
+                  <option value="14">14 天</option>
+                  <option value="30">30 天</option>
+                  <option value="90">90 天</option>
+                  <option value="custom">自定义</option>
+                </select>
+              </label>
+              {inviteExpireOption === "custom" && (
+                <label>
+                  自定义天数
+                  <input name="customExpiresInDays" type="number" min="1" max="3650" autoFocus required />
+                </label>
+              )}
+              <button className="primary icon-text invite-submit" type="submit">
+                <Plus size={16} />
+                生成邀请码
+              </button>
+            </form>
+            {generatedInvites.length > 0 && (
+              <div className="generated-invites">
+                <div className="generated-head">
+                  <strong>本次生成</strong>
+                  <div className="actions">
+                    <button className="quiet icon-text" type="button" onClick={copyGeneratedInvites}>
+                      <Copy size={15} />
+                      复制
+                    </button>
+                    <button className="quiet icon-text" type="button" onClick={downloadGeneratedInvites}>
+                      <Download size={15} />
+                      下载
+                    </button>
+                  </div>
+                </div>
+                <pre>{generatedInvites.map((invite) => invite.code).join("\n")}</pre>
+              </div>
+            )}
+          </Modal>
+        )}
         {invites.length ? (
           <div className="table-wrap">
             <table className="table">
@@ -1135,7 +1223,18 @@ function SettingsPage({ onSettingsChange }: { onSettingsChange: () => Promise<vo
                         />
                       </td>
                       <td>
-                        <strong>{invite.code}</strong>
+                        <div className="invite-code-cell">
+                          <strong>{invite.code}</strong>
+                          <button
+                            className="quiet mini-copy"
+                            type="button"
+                            aria-label={`复制邀请码 ${invite.code}`}
+                            title="复制邀请码"
+                            onClick={() => copyInviteCode(invite.code)}
+                          >
+                            <Copy size={14} />
+                          </button>
+                        </div>
                       </td>
                       <td>{used ? "已使用" : expired ? "已过期" : "未使用"}</td>
                       <td>{invite.usedByEmail || "-"}</td>
@@ -1387,6 +1486,49 @@ async function api<T = Record<string, unknown>>(path: string, options: { method?
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function inviteExpirationFromDays(data: FormData): string {
+  const selectedDays = String(data.get("expiresInDays") || "");
+  if (!selectedDays) return "";
+  const daysValue = selectedDays === "custom" ? data.get("customExpiresInDays") : selectedDays;
+  const days = Number(daysValue || 0);
+  if (!Number.isFinite(days) || days < 1) {
+    throw new Error("请填写有效的过期天数");
+  }
+  return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+}
+
+async function copyText(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.top = "-999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  if (!copied) {
+    throw new Error("复制失败，请手动复制");
+  }
+}
+
+function downloadText(filename: string, text: string): void {
+  const blob = new Blob([text, "\n"], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(url);
 }
 
 function durationToMinutes(amount: FormDataEntryValue | null, unitValue: FormDataEntryValue | null): number {
