@@ -8,9 +8,9 @@ const args = new Set(process.argv.slice(2));
 function run(command, commandArgs, options = {}) {
   const result = spawnSync(command, commandArgs, {
     cwd: process.cwd(),
+    encoding: "utf8",
     env: { ...process.env, ...options.env },
     stdio: options.capture ? "pipe" : "inherit",
-    text: true,
   });
 
   if (result.status !== 0) {
