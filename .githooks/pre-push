@@ -1,0 +1,17 @@
+#!/bin/sh
+
+if [ "$MAILBELL_RELEASE_PUSH" = "1" ] || [ "$MAILBELL_ALLOW_DIRECT_PUSH" = "1" ]; then
+  exit 0
+fi
+
+cat >&2 <<'EOF'
+Direct git push is disabled for this project.
+
+Use:
+  npm run release:push
+
+That command bumps the patch version, pushes, and deploys after the push succeeds.
+To bypass intentionally, set MAILBELL_ALLOW_DIRECT_PUSH=1.
+EOF
+
+exit 1

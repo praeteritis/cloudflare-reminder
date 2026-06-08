@@ -10,6 +10,8 @@
     "frontend:dev": "vite dev",
     "deploy": "npm run build && wrangler deploy --config wrangler.local.toml",
     "deploy:public-config": "npm run build && wrangler deploy",
+    "prepare": "node scripts/setup-git-hooks.mjs",
+    "release:push": "node scripts/release-push.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.app.json --noEmit",
     "check:readiness": "node scripts/check-readiness.mjs",

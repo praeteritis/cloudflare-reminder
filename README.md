@@ -166,6 +166,23 @@ npm run deploy
 
 `npm run deploy` 使用本地私有的 `wrangler.local.toml`，因此可以绑定远程 D1，但不会把 `database_id` 提交到仓库。部署后访问你在 Cloudflare Dashboard 中绑定的 Worker 域名或自定义域名。
 
+### 7. 发布版本
+
+项目使用 `package.json` 的 patch 版本号管理发布。推送正式变更时使用：
+
+```bash
+npm run release:push
+```
+
+这个命令会依次执行：
+
+- 自动递增 patch 版本号，并更新 `package-lock.json`。
+- 创建 `chore: bump version to vX.Y.Z` 版本提交。
+- 推送当前分支到 `origin`。
+- 推送成功后运行 `npm run deploy` 部署 Worker。
+
+安装依赖时会自动配置 Git hook。直接运行 `git push` 会被 `pre-push` 拦截，避免漏掉版本提交；确实需要绕过时可临时设置 `MAILBELL_ALLOW_DIRECT_PUSH=1`。
+
 ## 使用说明
 
 打开页面后可以选择：
