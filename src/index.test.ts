@@ -77,7 +77,17 @@ class MockD1Database {
   tasks: ReturnType<typeof makeTask>[] = [];
   runs: MockReminderRunRow[] = [];
   jobs: MockEmailDeliveryJobRow[] = [];
-  auditLogs: Array<{ action: string; target_id: string | null; details: string | null }> = [];
+  auditLogs: Array<{
+    id: number;
+    actor_type: string;
+    actor_id: string | null;
+    actor_email: string | null;
+    action: string;
+    target_type: string | null;
+    target_id: string | null;
+    details: string | null;
+    created_at_utc: string;
+  }> = [];
 
   prepare(sql: string) {
     return new MockD1Statement(this, sql);
@@ -104,6 +114,13 @@ class MockD1Statement {
       };
     }
 
+    if (this.sql.includes("FROM audit_logs")) {
+      const action = this.sql.includes("action = ?") ? this.values[1] : null;
+      return {
+        results: this.db.auditLogs.filter((row) => !action || row.action === action) as T[],
+      };
+    }
+
     return { results: [] as T[] };
   }
 
@@ -124,6 +141,13 @@ class MockD1Statement {
 
     if (compactSql.includes("FROM invite_codes WHERE code")) {
       return (this.db.invites.find((invite) => invite.code === this.values[0]) ?? null) as T | null;
+    }
+
+    if (compactSql.includes("COUNT(*) AS count FROM audit_logs")) {
+      const action = compactSql.includes("action = ?") ? this.values[1] : null;
+      return {
+        count: this.db.auditLogs.filter((row) => !action || row.action === action).length,
+      } as T;
     }
 
     if (compactSql.includes("FROM oauth_pending")) {
@@ -296,8 +320,18 @@ class MockD1Statement {
     }
 
     if (compactSql.includes("INSERT INTO audit_logs")) {
-      const [, , , action, , targetId, details] = this.values as string[];
-      this.db.auditLogs.push({ action, target_id: targetId, details });
+      const [actorType, actorId, actorEmail, action, targetType, targetId, details, createdAtUtc] = this.values as string[];
+      this.db.auditLogs.push({
+        id: this.db.auditLogs.length + 1,
+        actor_type: actorType,
+        actor_id: actorId,
+        actor_email: actorEmail,
+        action,
+        target_type: targetType,
+        target_id: targetId,
+        details,
+        created_at_utc: createdAtUtc,
+      });
       return { meta: { changes: 1 } };
     }
 
@@ -1016,5 +1050,56 @@ describe("app shell", () => {
     expect(payload.isAdmin).toBe(false);
     expect(payload.settings.allowRegistration).toBe(true);
     expect(payload.settings.requireInvite).toBe(true);
+  });
+
+  it("records client errors without storing email addresses or tokens", async () => {
+    const db = new MockD1Database();
+    const response = await worker.fetch(
+      new Request("https://reminder.test/client-error?token=secret", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0 Chrome/120.0 Safari/537.36" },
+        body: JSON.stringify({
+          source: "window.error",
+          name: "Error",
+          message: "Failed for user@example.com with Bearer abc.def",
+          path: "/tasks?token=secret&email=user@example.com",
+        }),
+      }),
+      makeEnv(db)
+    );
+
+    expect(response.status).toBe(200);
+    expect(db.auditLogs[0]).toMatchObject({ action: "client_error", target_id: "/tasks" });
+    expect(db.auditLogs[0].details).not.toContain("user@example.com");
+    expect(db.auditLogs[0].details).not.toContain("abc.def");
+    expect(db.auditLogs[0].details).toContain("[email]");
+    expect(db.auditLogs[0].details).toContain("Bearer [redacted]");
+  });
+
+  it("returns audit logs through the admin API", async () => {
+    const db = new MockD1Database();
+    db.auditLogs.push({
+      id: 1,
+      actor_type: "system",
+      actor_id: null,
+      actor_email: null,
+      action: "client_error",
+      target_type: "client",
+      target_id: "/tasks",
+      details: JSON.stringify({ path: "/tasks", message: "Client error" }),
+      created_at_utc: "2099-01-01T00:00:00.000Z",
+    });
+
+    const response = await worker.fetch(
+      new Request("https://reminder.test/admin/audit-logs?action=client_error&page=1&pageSize=20", {
+        headers: { Authorization: "Bearer secret" },
+      }),
+      makeEnv(db)
+    );
+    const payload = await response.json<{ auditLogs: Array<{ action: string; targetId: string | null }> }>();
+
+    expect(response.status).toBe(200);
+    expect(payload.auditLogs).toHaveLength(1);
+    expect(payload.auditLogs[0]).toMatchObject({ action: "client_error", targetId: "/tasks" });
   });
 });

@@ -235,7 +235,7 @@ export default {
           console.warn(
             JSON.stringify({
               event: "scheduled_reminder_error",
-              error: error instanceof Error ? error.message : String(error),
+              error: errorMessageForLog(error),
             })
           );
         })
@@ -262,7 +262,7 @@ export default {
           JSON.stringify({
             event: "queue_delivery_error",
             messageId: message.id,
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessageForLog(error),
           })
         );
         message.retry({ delaySeconds: calculateQueueRetryDelaySeconds(message.attempts) });
@@ -276,9 +276,9 @@ export default {
         console.warn(
           JSON.stringify({
             event: "inbound_reply_error",
-            from: message.from,
-            to: message.to,
-            error: error instanceof Error ? error.message : String(error),
+            hasFrom: Boolean(message.from),
+            hasTo: Boolean(message.to),
+            error: errorMessageForLog(error),
           })
         );
       })
@@ -312,6 +312,7 @@ export default {
       try {
         return await handleAdminLogin(request, env);
       } catch (error) {
+        await logRequestError(env, request, null, error);
         return jsonError(error);
       }
     }
@@ -320,6 +321,7 @@ export default {
       try {
         return await handleUserLogin(request, env);
       } catch (error) {
+        await logRequestError(env, request, null, error);
         return jsonError(error);
       }
     }
@@ -328,6 +330,7 @@ export default {
       try {
         return await handleUserRegister(request, env);
       } catch (error) {
+        await logRequestError(env, request, null, error);
         return jsonError(error);
       }
     }
@@ -336,6 +339,7 @@ export default {
       try {
         return await handleLinuxDoStart(request, env);
       } catch (error) {
+        await logRequestError(env, request, null, error);
         return jsonError(error);
       }
     }
@@ -344,6 +348,7 @@ export default {
       try {
         return await handleLinuxDoCallback(request, env);
       } catch (error) {
+        await logRequestError(env, request, null, error);
         return jsonError(error);
       }
     }
@@ -352,6 +357,7 @@ export default {
       try {
         return await handleLinuxDoComplete(request, env);
       } catch (error) {
+        await logRequestError(env, request, null, error);
         return jsonError(error);
       }
     }
@@ -375,6 +381,10 @@ export default {
 
     if (url.pathname === "/health" && request.method === "GET") {
       return Response.json(healthPayload());
+    }
+
+    if (url.pathname === "/client-error" && request.method === "POST") {
+      return handleClientErrorReport(request, env);
     }
 
     if (url.pathname.startsWith("/admin/")) {
@@ -436,6 +446,11 @@ export default {
         if (url.pathname === "/admin/logs" && request.method === "GET") {
           const page = await listReminderExecutionLogs(env, url, "admin", undefined);
           return Response.json({ ok: true, logs: page.items, page });
+        }
+
+        if (url.pathname === "/admin/audit-logs" && request.method === "GET") {
+          const page = await listAuditLogs(env, url, "admin", undefined);
+          return Response.json({ ok: true, auditLogs: page.items, page });
         }
 
         if (url.pathname === "/admin/tasks" && request.method === "GET") {
@@ -504,6 +519,7 @@ export default {
 
         return Response.json({ ok: false, error: "Not found" }, { status: 404 });
       } catch (error) {
+        await logRequestError(env, request, actor, error);
         return jsonError(error);
       }
     }
@@ -561,6 +577,7 @@ export default {
 
         return Response.json({ ok: false, error: "Not found" }, { status: 404 });
       } catch (error) {
+        await logRequestError(env, request, actor, error);
         return jsonError(error);
       }
     }
@@ -595,6 +612,7 @@ function healthPayload() {
         "DELETE /admin/invites/<invite_code>",
         "POST /admin/invites/batch-delete",
         "GET /admin/logs?result=all&type=delivery&page=1&pageSize=20",
+        "GET /admin/audit-logs?action=all&page=1&pageSize=20",
         "POST /admin/process-due",
       ],
     },
@@ -615,6 +633,7 @@ function healthPayload() {
         "POST /user/tasks/<task_id>/resume",
         "POST /user/tasks/<task_id>/cancel",
         "GET /user/logs?result=all&type=delivery&page=1&pageSize=20",
+        "POST /client-error",
       ],
     },
   };
@@ -768,7 +787,7 @@ export async function pingHeartbeat(env: Pick<Env, "HEARTBEAT_URL">, summary: Pr
     console.warn(
       JSON.stringify({
         event: "heartbeat_error",
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessageForLog(error),
       })
     );
   }
@@ -1221,7 +1240,7 @@ async function processReminderDeliveryMessage(
         taskId: body.taskId,
         type: body.type,
         attemptCount: queueAttempts,
-        error: result.errorMessage,
+        error: sanitizeLogText(result.errorMessage || "", 300),
       })
     );
     return "retry";
@@ -1548,8 +1567,7 @@ async function handleInboundReply(message: InboundEmailMessage, env: Env): Promi
       JSON.stringify({
         event: "inbound_reply_sender_mismatch",
         runId,
-        from: parsed.from,
-        expected: row.recipient_email,
+        fromMatchesExpected: false,
       })
     );
     await logAudit(env, { type: "system", email: "system" }, "inbound_reply_sender_mismatch", "task", row.id, {
@@ -1840,7 +1858,7 @@ async function sendEmail(
           JSON.stringify({
             event: "resend_send_failed",
             status: response.status,
-            error: responsePayload?.message ?? responsePayload?.name ?? responseText.slice(0, 200),
+            error: sanitizeLogText(responsePayload?.message ?? responsePayload?.name ?? responseText.slice(0, 200), 240),
           })
         );
         throw new Error(`Email provider rejected request with status ${response.status}`);
@@ -1945,10 +1963,212 @@ async function logAudit(
       JSON.stringify({
         event: "audit_log_failed",
         action,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessageForLog(error),
       })
     );
   }
+}
+
+async function handleClientErrorReport(request: Request, env: Env): Promise<Response> {
+  try {
+    const actor = await getAuthenticatedActor(request, env).catch(() => null);
+    const input = requireRecord(await readJsonBody(request), "Request body");
+    const path = sanitizeLogPath(readOptionalString(input, ["path", "pathname"]) || "/");
+    const source = sanitizeLogText(readOptionalString(input, ["source"]) || "client", 80);
+    const name = sanitizeLogText(readOptionalString(input, ["name"]) || "Error", 80);
+    const message = sanitizeLogText(readOptionalString(input, ["message"]) || "Client error", 240);
+    const line = readOptionalFiniteNumber(input, "line");
+    const column = readOptionalFiniteNumber(input, "column");
+    const details: Record<string, unknown> = {
+      requestId: readRequestId(request),
+      path,
+      source,
+      name,
+      message,
+      userAgent: summarizeUserAgent(request.headers.get("User-Agent") || ""),
+    };
+
+    if (line !== null) {
+      details.line = line;
+    }
+    if (column !== null) {
+      details.column = column;
+    }
+
+    logStructuredWarning("client_error", {
+      requestId: details.requestId,
+      path,
+      source,
+      actorType: actor?.type ?? "anonymous",
+    });
+    await logAudit(env, makeAuditActorForError(actor), "client_error", "client", path, details);
+  } catch (error) {
+    await logRequestError(env, request, null, error);
+  }
+
+  return Response.json({ ok: true });
+}
+
+async function logRequestError(
+  env: Env,
+  request: Request,
+  actor: AuthenticatedActor | null,
+  error: unknown
+): Promise<void> {
+  const status = errorStatus(error);
+  const action = status >= 500 ? "api_error" : "api_rejected";
+  const publicError = status >= 500 ? "Internal server error" : errorMessageForLog(error);
+  const details = makeRequestLogDetails(request, status, errorMessageForLog(error));
+
+  logStructuredWarning(action, {
+    requestId: details.requestId,
+    method: details.method,
+    path: details.path,
+    status,
+    actorType: actor?.type ?? "anonymous",
+    error: publicError,
+  });
+
+  await logAudit(
+    env,
+    makeAuditActorForError(actor),
+    action,
+    "request",
+    `${details.method} ${details.path}`,
+    details
+  );
+}
+
+async function logSecurityEvent(
+  env: Env,
+  request: Request,
+  action: string,
+  status: number,
+  reason: string,
+  actor: AuthenticatedActor | null
+): Promise<void> {
+  const details = makeRequestLogDetails(request, status, reason);
+
+  logStructuredWarning(action, {
+    requestId: details.requestId,
+    method: details.method,
+    path: details.path,
+    status,
+    actorType: actor?.type ?? "anonymous",
+    reason,
+  });
+
+  await logAudit(
+    env,
+    makeAuditActorForError(actor),
+    action,
+    "auth",
+    `${details.method} ${details.path}`,
+    { ...details, reason: sanitizeLogText(reason, 120) }
+  );
+}
+
+function makeRequestLogDetails(request: Request, status: number, error: string): Record<string, unknown> {
+  const url = new URL(request.url);
+  return {
+    requestId: readRequestId(request),
+    method: sanitizeLogText(request.method, 12),
+    path: sanitizeLogPath(url.pathname),
+    status,
+    error: sanitizeLogText(error, 300),
+    userAgent: summarizeUserAgent(request.headers.get("User-Agent") || ""),
+  };
+}
+
+function makeAuditActorForError(actor: AuthenticatedActor | null): AuthenticatedActor {
+  if (!actor) {
+    return { type: "system" };
+  }
+
+  return {
+    type: actor.type,
+    userId: actor.userId,
+  };
+}
+
+function logStructuredWarning(event: string, details: Record<string, unknown>): void {
+  console.warn(
+    JSON.stringify({
+      event,
+      ...details,
+    })
+  );
+}
+
+function errorStatus(error: unknown): number {
+  return error instanceof AdminInputError ? error.status : 500;
+}
+
+function errorMessageForLog(error: unknown): string {
+  if (error instanceof Error) {
+    return sanitizeLogText(error.message, 300);
+  }
+
+  return sanitizeLogText(String(error), 300);
+}
+
+function readRequestId(request: Request): string {
+  return sanitizeLogText(
+    request.headers.get("cf-ray") || request.headers.get("x-request-id") || crypto.randomUUID(),
+    80
+  );
+}
+
+function readOptionalFiniteNumber(record: Record<string, unknown>, name: string): number | null {
+  const value = record[name];
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function sanitizeLogPath(value: string): string {
+  const withoutQuery = value.split("?")[0]?.split("#")[0] || "/";
+  const path = withoutQuery.startsWith("/") ? withoutQuery : `/${withoutQuery}`;
+  return sanitizeLogText(path, 140);
+}
+
+function sanitizeLogText(value: string, maxLength: number): string {
+  return value
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[email]")
+    .replace(/([?&](?:token|password|inviteCode|code|state|linuxdoPending|linuxdoError)=)[^&#\s]+/gi, "$1[redacted]")
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[redacted]")
+    .replace(/[\u0000-\u001F\u007F]+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function summarizeUserAgent(userAgent: string): string {
+  const ua = userAgent.toLowerCase();
+  const browser = ua.includes("edg/")
+    ? "Edge"
+    : ua.includes("firefox/")
+      ? "Firefox"
+      : ua.includes("chrome/") || ua.includes("crios/")
+        ? "Chrome"
+        : ua.includes("safari/")
+          ? "Safari"
+          : "Other";
+  const platform = ua.includes("iphone") || ua.includes("ipad")
+    ? "iOS"
+    : ua.includes("android")
+      ? "Android"
+      : ua.includes("mac os")
+        ? "macOS"
+        : ua.includes("windows")
+          ? "Windows"
+          : ua.includes("linux")
+            ? "Linux"
+            : "Unknown";
+
+  return `${browser}/${platform}`;
 }
 
 async function listAuditLogs(
@@ -3507,6 +3727,7 @@ function isTaskStatus(value: string): value is TaskStatus {
 
 async function handleAdminLogin(request: Request, env: Env): Promise<Response> {
   if (!env.ADMIN_TOKEN) {
+    await logSecurityEvent(env, request, "api_error", 500, "admin_token_missing", null);
     return Response.json({ ok: false, error: "ADMIN_TOKEN is not configured" }, { status: 500 });
   }
 
@@ -3515,6 +3736,7 @@ async function handleAdminLogin(request: Request, env: Env): Promise<Response> {
   const remember = input.remember === true;
 
   if (!constantTimeEqual(token, env.ADMIN_TOKEN)) {
+    await logSecurityEvent(env, request, "auth_admin_login_failed", 401, "invalid_token", null);
     return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
@@ -3533,6 +3755,7 @@ async function handleAdminLogin(request: Request, env: Env): Promise<Response> {
 
 async function handleUserRegister(request: Request, env: Env): Promise<Response> {
   if (!env.ADMIN_TOKEN) {
+    await logSecurityEvent(env, request, "api_error", 500, "admin_token_missing", null);
     return Response.json({ ok: false, error: "ADMIN_TOKEN is not configured" }, { status: 500 });
   }
 
@@ -3611,6 +3834,7 @@ async function handleUserRegister(request: Request, env: Env): Promise<Response>
 
 async function handleUserLogin(request: Request, env: Env): Promise<Response> {
   if (!env.ADMIN_TOKEN) {
+    await logSecurityEvent(env, request, "api_error", 500, "admin_token_missing", null);
     return Response.json({ ok: false, error: "ADMIN_TOKEN is not configured" }, { status: 500 });
   }
 
@@ -3621,10 +3845,12 @@ async function handleUserLogin(request: Request, env: Env): Promise<Response> {
   const user = await findUserByEmail(env, email);
 
   if (!user || !(await verifyPassword(password, user.password_salt, user.password_hash))) {
+    await logSecurityEvent(env, request, "auth_user_login_failed", 401, "invalid_credentials", null);
     return Response.json({ ok: false, error: "邮箱或密码不正确" }, { status: 401 });
   }
 
   if (user.status === "banned") {
+    await logSecurityEvent(env, request, "auth_user_login_blocked", 403, "banned", { type: "user", userId: user.id });
     return Response.json({ ok: false, error: "账号已被封禁" }, { status: 403 });
   }
 

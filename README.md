@@ -41,9 +41,24 @@ Mailbell 邮件铃是一个部署在 Cloudflare Workers 上的个人邮件提醒
 - Queue consumer 每批最多处理 10 封，批等待时间 2 秒，失败最多重试 10 次，仍失败会进入死信队列。
 - Cron 会巡检卡住的投递作业：`queued` 超过 5 分钟、`sending` 超过 2 分钟、`retrying` 超过 30 分钟会自动恢复为 `pending` 并重新入队。
 - 每次发送尝试都会写入 `send_logs`；失败会记录 provider、错误信息、任务、提醒轮次和 `delivery_key`，管理员可在日志页筛选失败记录。
+- 用户操作失败、接口异常和匿名前端错误会上报到 `audit_logs`，保留 30 天；Cloudflare Workers Logs 只记录脱敏后的结构化运维字段。
 - Cron heartbeat 会带上本轮 `createdRuns`、`nagReminders`、`recoveredDeliveries`、`queuedDeliveries`、`cleanupDeletedRows` 和 `backlog`，方便接入外部监控。
 
 Cloudflare Cron 本身是分钟级触发，因此这个项目的“按时”精度按分钟计算；队列和邮件服务短暂抖动时，系统会通过重试和恢复机制尽快补发。
+
+## 排障日志
+
+发送日志仍在管理台“执行日志”里查看。接口异常、登录失败、用户操作拒绝、匿名前端错误可以通过管理 API 或 D1 查询：
+
+```bash
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  "https://your-worker.example.com/admin/audit-logs?action=all&page=1&pageSize=20"
+
+npx wrangler d1 execute personal-reminder --remote --config wrangler.local.toml \
+  --command "SELECT action, target_id, details, created_at_utc FROM audit_logs ORDER BY created_at_utc DESC LIMIT 20"
+```
+
+前端错误上报只发送错误类型、脱敏后的错误信息、页面路径、粗略浏览器/系统信息和行列号；不会上传邮箱、密码、token、邀请码、任务标题、任务内容或收件邮箱。
 
 ## 界面预览
 
