@@ -183,8 +183,8 @@ function TaskEditor({
     }
     if (dueMode === "relative") {
       const firstDueAt = new Date(Date.now() + Number(recurrenceIntervalMinutes || 0) * 60 * 1000);
-      const endAt = new Date(recurrenceEndAt);
-      if (!recurrenceEndAt || Number.isNaN(endAt.getTime()) || endAt <= firstDueAt) {
+      const endAt = recurrenceEndAt ? new Date(recurrenceEndAt) : null;
+      if (endAt && (Number.isNaN(endAt.getTime()) || endAt <= firstDueAt)) {
         onError("结束时间必须晚于第一次提醒时间");
         return;
       }
@@ -200,12 +200,20 @@ function TaskEditor({
     };
     if (dueMode === "relative") {
       payload.minutesFromNow = recurrenceIntervalMinutes;
-      payload.recurrence = {
+      const recurrencePayload: {
+        type: "interval";
+        intervalMinutes: number | null;
+        anchor: "scheduled_time";
+        endAt?: string;
+      } = {
         type: "interval",
         intervalMinutes: recurrenceIntervalMinutes,
         anchor: "scheduled_time",
-        endAt: recurrenceEndAt,
       };
+      if (recurrenceEndAt) {
+        recurrencePayload.endAt = recurrenceEndAt;
+      }
+      payload.recurrence = recurrencePayload;
     } else {
       payload.dueAt = String(data.get("dueAt") || "");
     }
@@ -315,7 +323,7 @@ function TaskEditor({
             </label>
             <label>
               停止时间
-              <input name="recurrenceEndAt" type="datetime-local" defaultValue={toDateTimeLocalValue(editing?.recurrenceEndAtUtc)} required />
+              <input name="recurrenceEndAt" type="datetime-local" defaultValue={toDateTimeLocalValue(editing?.recurrenceEndAtUtc)} />
             </label>
           </div>
         ) : (
