@@ -34,6 +34,7 @@ interface Task {
   recurrence_interval_minutes: number | null;
   recurrence_anchor: RecurrenceAnchor;
   nag_interval_minutes: number;
+  max_nag_count: number;
   current_run_id: string | null;
   created_at_utc: string;
   updated_at_utc: string;
@@ -81,6 +82,7 @@ interface TaskUpdateInput {
   recurrence_interval_minutes: number | null;
   recurrence_anchor: RecurrenceAnchor;
   nag_interval_minutes: number;
+  max_nag_count: number;
   updated_at_utc: string;
 }
 
@@ -189,6 +191,8 @@ interface LinuxDoUser {
 const RUN_ID_PATTERN = /\[R:(run_[A-Za-z0-9_-]+)\]/;
 const DEFAULT_TIMEZONE = "Asia/Shanghai";
 const DEFAULT_NAG_INTERVAL_MINUTES = 1440;
+const DEFAULT_MAX_NAG_COUNT = 3;
+const TASK_MAX_NAG_COUNT = 10;
 const FAILED_SEND_RETRY_MINUTES = 1;
 const MAX_LIST_LIMIT = 100;
 const DUE_SCAN_LIMIT = 250;
@@ -895,12 +899,18 @@ async function createJobsForDueNagReminders(env: Env, nowIso: string): Promise<n
 
 async function updateRunAfterReminderDelivery(
   env: Env,
-  task: Task,
+  task: TaskRunRow,
   runId: string,
   type: ReminderDeliveryType,
   sentAt: Date
 ): Promise<void> {
   const sentAtIso = sentAt.toISOString();
+
+  if (hasReachedNagLimitAfterDelivery(task)) {
+    await closeRunAfterMaxNagCount(env, task, runId, sentAt);
+    return;
+  }
+
   const nextNagAt = calculateNextNagAt(task, sentAt, true).toISOString();
 
   await env.DB.prepare(
@@ -915,6 +925,72 @@ async function updateRunAfterReminderDelivery(
     .run();
 
   void type;
+}
+
+export function hasReachedNagLimitAfterDelivery(task: Pick<TaskRunRow, "run_sent_count" | "max_nag_count">): boolean {
+  return Number(task.run_sent_count || 0) + 1 >= 1 + Number(task.max_nag_count || 0);
+}
+
+async function closeRunAfterMaxNagCount(env: Env, task: TaskRunRow, runId: string, completedAt: Date): Promise<void> {
+  const completedAtIso = completedAt.toISOString();
+  const nextDueAt = calculateNextDueAt(task, completedAt);
+  const completedBy = "system:max_nag_count";
+  const result = await env.DB.prepare(
+    `UPDATE reminder_runs
+     SET sent_count = sent_count + 1,
+         last_sent_at_utc = ?,
+         status = 'completed',
+         next_nag_at_utc = NULL,
+         completed_at_utc = ?,
+         completed_by = ?,
+         updated_at_utc = ?
+     WHERE id = ?
+       AND status = 'open'
+       AND EXISTS (
+         SELECT 1
+         FROM tasks
+         WHERE tasks.id = reminder_runs.task_id
+           AND tasks.status = 'active'
+           AND tasks.deleted_at_utc IS NULL
+           AND tasks.current_run_id = reminder_runs.id
+       )`
+  )
+    .bind(completedAtIso, completedAtIso, completedBy, completedAtIso, runId)
+    .run();
+
+  if (result.meta.changes === 0) {
+    return;
+  }
+
+  if (nextDueAt) {
+    await env.DB.prepare(
+      `UPDATE tasks
+       SET current_run_id = NULL,
+           next_due_at_utc = ?,
+           status = 'active',
+           updated_at_utc = ?
+       WHERE id = ? AND current_run_id = ?`
+    )
+      .bind(nextDueAt.toISOString(), completedAtIso, task.id, runId)
+      .run();
+  } else {
+    await env.DB.prepare(
+      `UPDATE tasks
+       SET current_run_id = NULL,
+           status = 'done',
+           updated_at_utc = ?
+       WHERE id = ? AND current_run_id = ?`
+    )
+      .bind(completedAtIso, task.id, runId)
+      .run();
+  }
+
+  await logAudit(env, { type: "system", email: "system" }, "reminder_run_max_nag_reached", "task", task.id, {
+    runId,
+    sentCount: Number(task.run_sent_count || 0) + 1,
+    maxNagCount: task.max_nag_count,
+    nextDueAtUtc: nextDueAt?.toISOString() ?? null,
+  });
 }
 
 export function buildReminderDeliveryKey(runId: string, type: ReminderDeliveryType, scheduledForUtc: string): string {
@@ -1622,6 +1698,12 @@ export function buildTaskFromAdminInput(
       ["nagIntervalMinutes", "nag_interval_minutes", "nagMinutes", "nag"],
       "nagIntervalMinutes"
     ) ?? DEFAULT_NAG_INTERVAL_MINUTES;
+  const maxNagCount =
+    readOptionalNonNegativeInteger(
+      record,
+      ["maxNagCount", "max_nag_count", "nagMaxCount", "nag_max_count"],
+      "maxNagCount"
+    ) ?? DEFAULT_MAX_NAG_COUNT;
   const recurrence = readOptionalRecord(record, ["recurrence"]);
   const recurrenceType = resolveRecurrenceType(record, recurrence);
   const recurrenceAnchor = resolveRecurrenceAnchor(record, recurrence);
@@ -1640,6 +1722,7 @@ export function buildTaskFromAdminInput(
   assertMaxCharacters(body, TASK_BODY_MAX_CHARS, "body");
   assertMaxCharacters(timezone, TASK_TIMEZONE_MAX_CHARS, "timezone");
   assertMaxInteger(nagIntervalMinutes, TASK_MAX_INTERVAL_MINUTES, "nagIntervalMinutes");
+  assertMaxInteger(maxNagCount, TASK_MAX_NAG_COUNT, "maxNagCount");
   if (recurrenceIntervalMinutes !== null) {
     assertMaxInteger(recurrenceIntervalMinutes, TASK_MAX_INTERVAL_MINUTES, "recurrence.intervalMinutes");
   }
@@ -1658,6 +1741,7 @@ export function buildTaskFromAdminInput(
     recurrence_interval_minutes: recurrenceIntervalMinutes,
     recurrence_anchor: recurrenceAnchor,
     nag_interval_minutes: nagIntervalMinutes,
+    max_nag_count: maxNagCount,
     current_run_id: null,
     created_at_utc: nowIso,
     updated_at_utc: nowIso,
@@ -1686,6 +1770,7 @@ export function buildTaskUpdateFromAdminInput(
     recurrence_interval_minutes: parsed.recurrence_interval_minutes,
     recurrence_anchor: parsed.recurrence_anchor,
     nag_interval_minutes: parsed.nag_interval_minutes,
+    max_nag_count: parsed.max_nag_count,
     updated_at_utc: parsed.updated_at_utc,
   };
 }
@@ -2248,11 +2333,12 @@ async function insertTask(env: Env, task: Task): Promise<void> {
        recurrence_interval_minutes,
        recurrence_anchor,
        nag_interval_minutes,
+       max_nag_count,
        current_run_id,
        created_at_utc,
        updated_at_utc,
        deleted_at_utc
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       task.id,
@@ -2268,6 +2354,7 @@ async function insertTask(env: Env, task: Task): Promise<void> {
       task.recurrence_interval_minutes,
       task.recurrence_anchor,
       task.nag_interval_minutes,
+      task.max_nag_count,
       task.current_run_id,
       task.created_at_utc,
       task.updated_at_utc,
@@ -2501,6 +2588,7 @@ async function updateTaskFromAdminInput(env: Env, id: string, input: unknown, us
            recurrence_interval_minutes = ?,
            recurrence_anchor = ?,
            nag_interval_minutes = ?,
+           max_nag_count = ?,
            current_run_id = NULL,
            updated_at_utc = ?
        WHERE id = ?`
@@ -2515,6 +2603,7 @@ async function updateTaskFromAdminInput(env: Env, id: string, input: unknown, us
       update.recurrence_interval_minutes,
       update.recurrence_anchor,
       update.nag_interval_minutes,
+      update.max_nag_count,
       update.updated_at_utc,
       id
     )
@@ -2639,6 +2728,7 @@ function serializeTask(task: Task) {
     recurrenceIntervalMinutes: task.recurrence_interval_minutes,
     recurrenceAnchor: task.recurrence_anchor,
     nagIntervalMinutes: task.nag_interval_minutes,
+    maxNagCount: task.max_nag_count,
     currentRunId: task.current_run_id,
     createdAtUtc: task.created_at_utc,
     updatedAtUtc: task.updated_at_utc,
@@ -3229,6 +3319,28 @@ function readOptionalPositiveInteger(
     const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
     if (!Number.isInteger(number) || number <= 0) {
       throw new AdminInputError(`${displayName} must be a positive integer`);
+    }
+
+    return number;
+  }
+
+  return null;
+}
+
+function readOptionalNonNegativeInteger(
+  record: Record<string, unknown>,
+  names: string[],
+  displayName: string
+): number | null {
+  for (const name of names) {
+    if (!(name in record)) {
+      continue;
+    }
+
+    const value = record[name];
+    const number = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+    if (!Number.isInteger(number) || number < 0) {
+      throw new AdminInputError(`${displayName} must be a non-negative integer`);
     }
 
     return number;

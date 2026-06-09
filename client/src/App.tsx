@@ -59,6 +59,7 @@ interface Task {
   recurrenceIntervalMinutes: number | null;
   recurrenceAnchor: "scheduled_time" | "completion_time";
   nagIntervalMinutes: number;
+  maxNagCount: number;
   userEmail?: string | null;
   currentRun?: {
     status?: string;
@@ -116,6 +117,8 @@ const PAGE_SIZE = 20;
 const TASK_TITLE_MAX_CHARS = 20;
 const TASK_BODY_MAX_CHARS = 200;
 const TASK_MAX_INTERVAL_MINUTES = 366 * 24 * 60;
+const TASK_DEFAULT_MAX_NAG_COUNT = 3;
+const TASK_MAX_NAG_COUNT = 10;
 const GITHUB_REPOSITORY_URL = "https://github.com/maya1900/cloudflare-reminder";
 
 export function App() {
@@ -670,8 +673,13 @@ function TaskEditor({
     const recurrenceIntervalMinutes = repeat
       ? durationToMinutes(data.get("repeatAmount"), data.get("repeatUnit"))
       : null;
+    const maxNagCount = Number(data.get("maxNagCount") || TASK_DEFAULT_MAX_NAG_COUNT);
     if (nagIntervalMinutes > TASK_MAX_INTERVAL_MINUTES || (recurrenceIntervalMinutes ?? 0) > TASK_MAX_INTERVAL_MINUTES) {
       onError("提醒间隔最多 366 天");
+      return;
+    }
+    if (!Number.isInteger(maxNagCount) || maxNagCount < 0 || maxNagCount > TASK_MAX_NAG_COUNT) {
+      onError(`追提醒次数必须在 0-${TASK_MAX_NAG_COUNT} 之间`);
       return;
     }
 
@@ -681,6 +689,7 @@ function TaskEditor({
       title,
       body,
       nagIntervalMinutes,
+      maxNagCount,
     };
     if (dueMode === "relative") {
       payload.minutesFromNow = durationToMinutes(data.get("relativeAmount"), data.get("relativeUnit"));
@@ -807,6 +816,18 @@ function TaskEditor({
             </label>
           </div>
         )}
+        <label>
+          最多追提醒
+          <input
+            name="maxNagCount"
+            type="number"
+            min="0"
+            max={TASK_MAX_NAG_COUNT}
+            defaultValue={editing?.maxNagCount ?? TASK_DEFAULT_MAX_NAG_COUNT}
+            required
+          />
+          <span className="field-hint">0-{TASK_MAX_NAG_COUNT}</span>
+        </label>
         <label className="remember">
           <input type="checkbox" checked={repeat} onChange={(event) => setRepeat(event.target.checked)} />
           重复提醒
@@ -879,6 +900,7 @@ function TaskCard({
           <span className="pill">下次 {formatTime(task.nextDueAtUtc)}</span>
           <span className="pill">{recurrence}</span>
           <span className="pill">追 {formatDuration(task.nagIntervalMinutes)}</span>
+          <span className="pill">最多追 {task.maxNagCount} 次</span>
           {task.currentRun && (
             <span className="pill">
               run {task.currentRun.status || "open"} / {Number(task.currentRun.sentCount || 0)}

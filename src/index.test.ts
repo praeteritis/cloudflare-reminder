@@ -10,6 +10,7 @@ import {
   extractRunId,
   formatInTimezone,
   getFirstMeaningfulLine,
+  hasReachedNagLimitAfterDelivery,
   isReminderDeliveryMessage,
   markDeadLetteredDeliveryMessages,
   pingHeartbeat,
@@ -336,6 +337,7 @@ function makeTask(overrides: Record<string, unknown> = {}) {
     recurrence_interval_minutes: null,
     recurrence_anchor: "scheduled_time",
     nag_interval_minutes: 5,
+    max_nag_count: 3,
     current_run_id: null,
     created_at_utc: "2026-06-07T00:00:00.000Z",
     updated_at_utc: "2026-06-07T00:00:00.000Z",
@@ -423,6 +425,15 @@ describe("nag retry scheduling", () => {
     );
 
     expect(next.toISOString()).toBe("2026-06-07T12:01:00.000Z");
+  });
+
+  it("closes a run after the configured number of nag reminders", () => {
+    expect(hasReachedNagLimitAfterDelivery({ run_sent_count: 0, max_nag_count: 3 })).toBe(false);
+    expect(hasReachedNagLimitAfterDelivery({ run_sent_count: 3, max_nag_count: 3 })).toBe(true);
+  });
+
+  it("can disable nag reminders with a zero max nag count", () => {
+    expect(hasReachedNagLimitAfterDelivery({ run_sent_count: 0, max_nag_count: 0 })).toBe(true);
   });
 });
 
@@ -613,6 +624,7 @@ describe("admin task input", () => {
       recurrence_type: "none",
       recurrence_interval_minutes: null,
       nag_interval_minutes: 30,
+      max_nag_count: 3,
     });
   });
 
@@ -709,6 +721,44 @@ describe("admin task input", () => {
     ).toThrow("nagIntervalMinutes must be 527040 or less");
   });
 
+  it("accepts and validates the max nag count", () => {
+    const task = buildTaskFromAdminInput(
+      {
+        recipientEmail: "user@example.com",
+        title: "测试",
+        minutesFromNow: 1,
+        maxNagCount: 10,
+      },
+      { id: "task_max_nag", now: new Date("2026-06-07T12:00:00.000Z") }
+    );
+
+    expect(task.max_nag_count).toBe(10);
+
+    expect(() =>
+      buildTaskFromAdminInput(
+        {
+          recipientEmail: "user@example.com",
+          title: "测试",
+          minutesFromNow: 1,
+          maxNagCount: 11,
+        },
+        { id: "task_max_nag_long", now: new Date("2026-06-07T12:00:00.000Z") }
+      )
+    ).toThrow("maxNagCount must be 10 or less");
+
+    expect(() =>
+      buildTaskFromAdminInput(
+        {
+          recipientEmail: "user@example.com",
+          title: "测试",
+          minutesFromNow: 1,
+          maxNagCount: -1,
+        },
+        { id: "task_max_nag_negative", now: new Date("2026-06-07T12:00:00.000Z") }
+      )
+    ).toThrow("maxNagCount must be a non-negative integer");
+  });
+
   it("builds an update payload for an existing task", () => {
     const update = buildTaskUpdateFromAdminInput(
       {
@@ -738,6 +788,7 @@ describe("admin task input", () => {
       recurrence_interval_minutes: 2880,
       recurrence_anchor: "scheduled_time",
       nag_interval_minutes: 60,
+      max_nag_count: 3,
     });
   });
 });
