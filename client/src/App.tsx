@@ -58,6 +58,7 @@ interface Task {
   recurrenceType: "none" | "interval";
   recurrenceIntervalMinutes: number | null;
   recurrenceAnchor: "scheduled_time" | "completion_time";
+  recurrenceEndAtUtc: string | null;
   nagIntervalMinutes: number;
   maxNagCount: number;
   userEmail?: string | null;
@@ -629,26 +630,24 @@ function TaskEditor({
   onError: (message: string) => void;
 }) {
   const [dueMode, setDueMode] = useState<DueMode>("relative");
-  const [repeat, setRepeat] = useState(false);
   const [busy, setBusy] = useState(false);
   const [titleValue, setTitleValue] = useState(editing?.title || "");
   const [bodyValue, setBodyValue] = useState(editing?.body || "");
   const [nagUnit, setNagUnit] = useState("hour");
   const editingNagDuration = durationAmount(editing?.nagIntervalMinutes || 60);
-  const editingRepeatDuration = durationAmount(editing?.recurrenceIntervalMinutes || 1);
+  const editingRelativeDuration = durationAmount(editing?.recurrenceIntervalMinutes || 60);
   const [nagAbsoluteUnit, setNagAbsoluteUnit] = useState(editingNagDuration.unit);
-  const [repeatUnit, setRepeatUnit] = useState(editingRepeatDuration.unit);
+  const [relativeUnit, setRelativeUnit] = useState(editingRelativeDuration.unit);
 
   useEffect(() => {
-    setDueMode(editing ? "absolute" : "relative");
-    setRepeat(editing?.recurrenceType === "interval");
+    setDueMode(editing?.recurrenceType === "interval" || !editing ? "relative" : "absolute");
     setTitleValue(editing?.title || "");
     setBodyValue(editing?.body || "");
     const nextNagDuration = durationAmount(editing?.nagIntervalMinutes || 60);
-    const nextRepeatDuration = durationAmount(editing?.recurrenceIntervalMinutes || 1);
-    setNagUnit("hour");
+    const nextRelativeDuration = durationAmount(editing?.recurrenceIntervalMinutes || 60);
+    setNagUnit(nextNagDuration.unit);
     setNagAbsoluteUnit(nextNagDuration.unit);
-    setRepeatUnit(nextRepeatDuration.unit);
+    setRelativeUnit(nextRelativeDuration.unit);
   }, [editing]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -670,9 +669,9 @@ function TaskEditor({
       dueMode === "relative"
         ? durationToMinutes(data.get("nagAmount"), data.get("nagUnit"))
         : durationToMinutes(data.get("nagAbsoluteAmount"), data.get("nagAbsoluteUnit"));
-    const recurrenceIntervalMinutes = repeat
-      ? durationToMinutes(data.get("repeatAmount"), data.get("repeatUnit"))
-      : null;
+    const recurrenceIntervalMinutes =
+      dueMode === "relative" ? durationToMinutes(data.get("relativeAmount"), data.get("relativeUnit")) : null;
+    const recurrenceEndAt = String(data.get("recurrenceEndAt") || "");
     const maxNagCount = Number(data.get("maxNagCount") || TASK_DEFAULT_MAX_NAG_COUNT);
     if (nagIntervalMinutes > TASK_MAX_INTERVAL_MINUTES || (recurrenceIntervalMinutes ?? 0) > TASK_MAX_INTERVAL_MINUTES) {
       onError("提醒间隔最多 366 天");
@@ -681,6 +680,14 @@ function TaskEditor({
     if (!Number.isInteger(maxNagCount) || maxNagCount < 0 || maxNagCount > TASK_MAX_NAG_COUNT) {
       onError(`追提醒次数必须在 0-${TASK_MAX_NAG_COUNT} 之间`);
       return;
+    }
+    if (dueMode === "relative") {
+      const firstDueAt = new Date(Date.now() + Number(recurrenceIntervalMinutes || 0) * 60 * 1000);
+      const endAt = new Date(recurrenceEndAt);
+      if (!recurrenceEndAt || Number.isNaN(endAt.getTime()) || endAt <= firstDueAt) {
+        onError("结束时间必须晚于第一次提醒时间");
+        return;
+      }
     }
 
     setBusy(true);
@@ -692,16 +699,15 @@ function TaskEditor({
       maxNagCount,
     };
     if (dueMode === "relative") {
-      payload.minutesFromNow = durationToMinutes(data.get("relativeAmount"), data.get("relativeUnit"));
-    } else {
-      payload.dueAt = String(data.get("dueAt") || "");
-    }
-    if (repeat) {
+      payload.minutesFromNow = recurrenceIntervalMinutes;
       payload.recurrence = {
         type: "interval",
         intervalMinutes: recurrenceIntervalMinutes,
-        anchor: String(data.get("repeatAnchor") || "scheduled_time"),
+        anchor: "scheduled_time",
+        endAt: recurrenceEndAt,
       };
+    } else {
+      payload.dueAt = String(data.get("dueAt") || "");
     }
 
     try {
@@ -765,20 +771,31 @@ function TaskEditor({
         {dueMode === "relative" ? (
           <div className="inline-fields">
             <label>
-              延后
-              <input name="relativeAmount" type="number" min="1" defaultValue="1" required />
+              每
+              <input
+                name="relativeAmount"
+                type="number"
+                min="1"
+                max={maxDurationAmount(relativeUnit)}
+                defaultValue={editingRelativeDuration.amount}
+                required
+              />
             </label>
             <label>
               单位
-              <select name="relativeUnit" defaultValue="hour">
+              <select name="relativeUnit" value={relativeUnit} onChange={(event) => setRelativeUnit(event.target.value)}>
                 <option value="minute">分钟</option>
                 <option value="hour">小时</option>
                 <option value="day">天</option>
               </select>
             </label>
             <label>
+              结束时间
+              <input name="recurrenceEndAt" type="datetime-local" defaultValue={toDateTimeLocalValue(editing?.recurrenceEndAtUtc)} required />
+            </label>
+            <label>
               追提醒
-              <input name="nagAmount" type="number" min="1" max={maxDurationAmount(nagUnit)} defaultValue="1" required />
+              <input name="nagAmount" type="number" min="1" max={maxDurationAmount(nagUnit)} defaultValue={editingNagDuration.amount} required />
             </label>
             <label>
               单位
@@ -828,40 +845,6 @@ function TaskEditor({
           />
           <span className="field-hint">0-{TASK_MAX_NAG_COUNT}</span>
         </label>
-        <label className="remember">
-          <input type="checkbox" checked={repeat} onChange={(event) => setRepeat(event.target.checked)} />
-          重复提醒
-        </label>
-        {repeat && (
-          <div className="inline-fields">
-            <label>
-              每
-              <input
-                name="repeatAmount"
-                type="number"
-                min="1"
-                max={maxDurationAmount(repeatUnit)}
-                defaultValue={editingRepeatDuration.amount}
-                required
-              />
-            </label>
-            <label>
-              单位
-              <select name="repeatUnit" value={repeatUnit} onChange={(event) => setRepeatUnit(event.target.value)}>
-                <option value="minute">分钟</option>
-                <option value="hour">小时</option>
-                <option value="day">天</option>
-              </select>
-            </label>
-            <label>
-              锚点
-              <select name="repeatAnchor" defaultValue={editing?.recurrenceAnchor || "scheduled_time"}>
-                <option value="scheduled_time">按计划时间</option>
-                <option value="completion_time">按完成时间</option>
-              </select>
-            </label>
-          </div>
-        )}
         <div className="form-actions">
           <button className="primary icon-text" type="submit" disabled={busy}>
             {editing ? <Save size={16} /> : <Plus size={16} />}
@@ -888,6 +871,7 @@ function TaskCard({
   onAction: (task: Task, action: "pause" | "resume" | "cancel" | "delete") => void;
 }) {
   const recurrence = task.recurrenceType === "interval" ? `每 ${formatDuration(task.recurrenceIntervalMinutes)}` : "一次性";
+  const recurrenceEnd = task.recurrenceType === "interval" && task.recurrenceEndAtUtc ? `结束 ${formatTime(task.recurrenceEndAtUtc)}` : null;
   return (
     <article className={`task ${task.status}`}>
       <div>
@@ -899,6 +883,7 @@ function TaskCard({
           <span className="pill">{task.recipientEmail}</span>
           <span className="pill">下次 {formatTime(task.nextDueAtUtc)}</span>
           <span className="pill">{recurrence}</span>
+          {recurrenceEnd && <span className="pill">{recurrenceEnd}</span>}
           <span className="pill">追 {formatDuration(task.nagIntervalMinutes)}</span>
           <span className="pill">最多追 {task.maxNagCount} 次</span>
           {task.currentRun && (

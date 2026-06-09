@@ -336,6 +336,7 @@ function makeTask(overrides: Record<string, unknown> = {}) {
     recurrence_type: "none",
     recurrence_interval_minutes: null,
     recurrence_anchor: "scheduled_time",
+    recurrence_end_at_utc: null,
     nag_interval_minutes: 5,
     max_nag_count: 3,
     current_run_id: null,
@@ -403,6 +404,20 @@ describe("recurrence calculation", () => {
     );
 
     expect(next?.toISOString()).toBe("2026-06-07T05:00:00.000Z");
+  });
+
+  it("stops interval tasks after the recurrence end time", () => {
+    const next = calculateNextDueAt(
+      makeTask({
+        recurrence_type: "interval",
+        recurrence_interval_minutes: 60,
+        recurrence_anchor: "scheduled_time",
+        recurrence_end_at_utc: "2026-06-07T03:00:00.000Z",
+      }),
+      new Date("2026-06-07T03:30:00.000Z")
+    );
+
+    expect(next).toBeNull();
   });
 });
 
@@ -652,6 +667,51 @@ describe("admin task input", () => {
     expect(task.recurrence_type).toBe("interval");
     expect(task.recurrence_interval_minutes).toBe(1440);
     expect(task.recurrence_anchor).toBe("completion_time");
+    expect(task.recurrence_end_at_utc).toBeNull();
+  });
+
+  it("stores a recurrence end time for interval tasks", () => {
+    const task = buildTaskFromAdminInput(
+      {
+        recipientEmail: "user@example.com",
+        title: "喝水",
+        minutesFromNow: 60,
+        recurrence: {
+          type: "interval",
+          intervalMinutes: 60,
+          endAt: "2026-06-07 23:00",
+        },
+      },
+      {
+        id: "task_repeat_until",
+        now: new Date("2026-06-07T12:00:00.000Z"),
+        timezone: "Asia/Shanghai",
+      }
+    );
+
+    expect(task.recurrence_end_at_utc).toBe("2026-06-07T15:00:00.000Z");
+  });
+
+  it("rejects recurrence end times before the first reminder", () => {
+    expect(() =>
+      buildTaskFromAdminInput(
+        {
+          recipientEmail: "user@example.com",
+          title: "喝水",
+          minutesFromNow: 60,
+          recurrence: {
+            type: "interval",
+            intervalMinutes: 60,
+            endAt: "2026-06-07 19:00",
+          },
+        },
+        {
+          id: "task_repeat_bad_end",
+          now: new Date("2026-06-07T12:00:00.000Z"),
+          timezone: "Asia/Shanghai",
+        }
+      )
+    ).toThrow("recurrenceEndAt must be after the first reminder time");
   });
 
   it("rejects invalid admin task input", () => {
@@ -787,6 +847,7 @@ describe("admin task input", () => {
       recurrence_type: "interval",
       recurrence_interval_minutes: 2880,
       recurrence_anchor: "scheduled_time",
+      recurrence_end_at_utc: null,
       nag_interval_minutes: 60,
       max_nag_count: 3,
     });

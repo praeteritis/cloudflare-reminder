@@ -33,6 +33,7 @@ interface Task {
   recurrence_type: RecurrenceType;
   recurrence_interval_minutes: number | null;
   recurrence_anchor: RecurrenceAnchor;
+  recurrence_end_at_utc: string | null;
   nag_interval_minutes: number;
   max_nag_count: number;
   current_run_id: string | null;
@@ -81,6 +82,7 @@ interface TaskUpdateInput {
   recurrence_type: RecurrenceType;
   recurrence_interval_minutes: number | null;
   recurrence_anchor: RecurrenceAnchor;
+  recurrence_end_at_utc: string | null;
   nag_interval_minutes: number;
   max_nag_count: number;
   updated_at_utc: string;
@@ -1678,6 +1680,13 @@ export function calculateNextDueAt(task: Task, completedAt: Date): Date | null {
     }
   }
 
+  if (task.recurrence_end_at_utc) {
+    const endAt = new Date(task.recurrence_end_at_utc);
+    if (!Number.isNaN(endAt.getTime()) && next > endAt) {
+      return null;
+    }
+  }
+
   return next;
 }
 
@@ -1709,6 +1718,7 @@ export function buildTaskFromAdminInput(
   const recurrenceAnchor = resolveRecurrenceAnchor(record, recurrence);
   const recurrenceIntervalMinutes = resolveRecurrenceIntervalMinutes(record, recurrence, recurrenceType);
   const dueAt = resolveAdminDueAt(record, timezone, now);
+  const recurrenceEndAt = resolveRecurrenceEndAt(record, recurrence, timezone, recurrenceType);
   const id = options.id ?? readOptionalString(record, ["id"]) ?? makeId("task");
 
   if (!isValidTaskId(id)) {
@@ -1726,6 +1736,9 @@ export function buildTaskFromAdminInput(
   if (recurrenceIntervalMinutes !== null) {
     assertMaxInteger(recurrenceIntervalMinutes, TASK_MAX_INTERVAL_MINUTES, "recurrence.intervalMinutes");
   }
+  if (recurrenceEndAt && recurrenceEndAt <= dueAt) {
+    throw new AdminInputError("recurrenceEndAt must be after the first reminder time");
+  }
 
   return {
     id,
@@ -1740,6 +1753,7 @@ export function buildTaskFromAdminInput(
     recurrence_type: recurrenceType,
     recurrence_interval_minutes: recurrenceIntervalMinutes,
     recurrence_anchor: recurrenceAnchor,
+    recurrence_end_at_utc: recurrenceEndAt?.toISOString() ?? null,
     nag_interval_minutes: nagIntervalMinutes,
     max_nag_count: maxNagCount,
     current_run_id: null,
@@ -1769,6 +1783,7 @@ export function buildTaskUpdateFromAdminInput(
     recurrence_type: parsed.recurrence_type,
     recurrence_interval_minutes: parsed.recurrence_interval_minutes,
     recurrence_anchor: parsed.recurrence_anchor,
+    recurrence_end_at_utc: parsed.recurrence_end_at_utc,
     nag_interval_minutes: parsed.nag_interval_minutes,
     max_nag_count: parsed.max_nag_count,
     updated_at_utc: parsed.updated_at_utc,
@@ -2332,13 +2347,14 @@ async function insertTask(env: Env, task: Task): Promise<void> {
        recurrence_type,
        recurrence_interval_minutes,
        recurrence_anchor,
+       recurrence_end_at_utc,
        nag_interval_minutes,
        max_nag_count,
        current_run_id,
        created_at_utc,
        updated_at_utc,
        deleted_at_utc
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       task.id,
@@ -2353,6 +2369,7 @@ async function insertTask(env: Env, task: Task): Promise<void> {
       task.recurrence_type,
       task.recurrence_interval_minutes,
       task.recurrence_anchor,
+      task.recurrence_end_at_utc,
       task.nag_interval_minutes,
       task.max_nag_count,
       task.current_run_id,
@@ -2587,6 +2604,7 @@ async function updateTaskFromAdminInput(env: Env, id: string, input: unknown, us
            recurrence_type = ?,
            recurrence_interval_minutes = ?,
            recurrence_anchor = ?,
+           recurrence_end_at_utc = ?,
            nag_interval_minutes = ?,
            max_nag_count = ?,
            current_run_id = NULL,
@@ -2602,6 +2620,7 @@ async function updateTaskFromAdminInput(env: Env, id: string, input: unknown, us
       update.recurrence_type,
       update.recurrence_interval_minutes,
       update.recurrence_anchor,
+      update.recurrence_end_at_utc,
       update.nag_interval_minutes,
       update.max_nag_count,
       update.updated_at_utc,
@@ -2727,6 +2746,7 @@ function serializeTask(task: Task) {
     recurrenceType: task.recurrence_type,
     recurrenceIntervalMinutes: task.recurrence_interval_minutes,
     recurrenceAnchor: task.recurrence_anchor,
+    recurrenceEndAtUtc: task.recurrence_end_at_utc,
     nagIntervalMinutes: task.nag_interval_minutes,
     maxNagCount: task.max_nag_count,
     currentRunId: task.current_run_id,
@@ -3231,6 +3251,23 @@ function resolveRecurrenceIntervalMinutes(
   }
 
   return interval;
+}
+
+function resolveRecurrenceEndAt(
+  record: Record<string, unknown>,
+  recurrence: Record<string, unknown> | null,
+  timezone: string,
+  recurrenceType: RecurrenceType
+): Date | null {
+  if (recurrenceType === "none") {
+    return null;
+  }
+
+  const value =
+    readOptionalString(recurrence, ["endAt", "end_at", "endAtUtc", "end_at_utc"]) ??
+    readOptionalString(record, ["recurrenceEndAt", "recurrence_end_at", "recurrenceEndAtUtc", "recurrence_end_at_utc"]);
+
+  return value ? parseAdminDueAt(value, timezone) : null;
 }
 
 function readRequiredString(
