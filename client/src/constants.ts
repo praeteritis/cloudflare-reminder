@@ -1,0 +1,8 @@
+export const PAGE_SIZE = 20;
+export const TASK_TITLE_MAX_CHARS = 20;
+export const TASK_BODY_MAX_CHARS = 200;
+export const TASK_MAX_INTERVAL_MINUTES = 366 * 24 * 60;
+export const TASK_DEFAULT_MAX_NAG_COUNT = 3;
+export const TASK_MAX_NAG_COUNT = 10;
+export const GITHUB_REPOSITORY_URL = "https://github.com/maya1900/cloudflare-reminder";
+export const MAX_CLIENT_ERROR_REPORTS = 8;
