@@ -790,10 +790,6 @@ function TaskEditor({
               </select>
             </label>
             <label>
-              结束时间
-              <input name="recurrenceEndAt" type="datetime-local" defaultValue={toDateTimeLocalValue(editing?.recurrenceEndAtUtc)} required />
-            </label>
-            <label>
               追提醒
               <input name="nagAmount" type="number" min="1" max={maxDurationAmount(nagUnit)} defaultValue={editingNagDuration.amount} required />
             </label>
@@ -804,6 +800,22 @@ function TaskEditor({
                 <option value="hour">小时</option>
                 <option value="day">天</option>
               </select>
+            </label>
+            <label>
+              最多追
+              <input
+                name="maxNagCount"
+                type="number"
+                min="0"
+                max={TASK_MAX_NAG_COUNT}
+                defaultValue={editing?.maxNagCount ?? TASK_DEFAULT_MAX_NAG_COUNT}
+                required
+              />
+              <span className="field-hint">0-{TASK_MAX_NAG_COUNT}</span>
+            </label>
+            <label>
+              停止时间
+              <input name="recurrenceEndAt" type="datetime-local" defaultValue={toDateTimeLocalValue(editing?.recurrenceEndAtUtc)} required />
             </label>
           </div>
         ) : (
@@ -831,20 +843,20 @@ function TaskEditor({
                 <option value="day">天</option>
               </select>
             </label>
+            <label>
+              最多追
+              <input
+                name="maxNagCount"
+                type="number"
+                min="0"
+                max={TASK_MAX_NAG_COUNT}
+                defaultValue={editing?.maxNagCount ?? TASK_DEFAULT_MAX_NAG_COUNT}
+                required
+              />
+              <span className="field-hint">0-{TASK_MAX_NAG_COUNT}</span>
+            </label>
           </div>
         )}
-        <label>
-          最多追提醒
-          <input
-            name="maxNagCount"
-            type="number"
-            min="0"
-            max={TASK_MAX_NAG_COUNT}
-            defaultValue={editing?.maxNagCount ?? TASK_DEFAULT_MAX_NAG_COUNT}
-            required
-          />
-          <span className="field-hint">0-{TASK_MAX_NAG_COUNT}</span>
-        </label>
         <div className="form-actions">
           <button className="primary icon-text" type="submit" disabled={busy}>
             {editing ? <Save size={16} /> : <Plus size={16} />}
