@@ -92,7 +92,7 @@ export function UsersPage() {
                   </td>
                   <td>{user.status}</td>
                   <td>
-                    {Number(user.taskCount || 0)}/{Number(user.taskLimit || 5)}
+                    {Number(user.taskCount || 0)}
                   </td>
                   <td>{formatTime(user.lastLoginAtUtc)}</td>
                   <td>

@@ -38,6 +38,7 @@ export interface Task {
   recurrenceEndAtUtc: string | null;
   nagIntervalMinutes: number;
   maxNagCount: number;
+  notificationChannelIds: string[];
   userEmail?: string | null;
   currentRun?: {
     status?: string;
@@ -45,9 +46,21 @@ export interface Task {
   } | null;
 }
 
+export type NotificationChannelType = "email" | "bark" | "gotify" | "pushdeer" | "pushplus" | "telegram" | "dingtalk" | "wecom" | "feishu" | "webhook";
+
+export interface NotificationChannel {
+  id: string;
+  name: string;
+  type: NotificationChannelType;
+  enabled: boolean;
+  builtIn: boolean;
+  config?: Record<string, string>;
+  createdAtUtc?: string;
+  updatedAtUtc?: string;
+}
+
 export interface TaskUsage {
   used: number;
-  limit: number;
 }
 
 export interface UserRow {
@@ -56,7 +69,6 @@ export interface UserRow {
   status: string;
   linuxdoUsername?: string | null;
   taskCount?: number;
-  taskLimit?: number;
   lastLoginAtUtc?: string | null;
 }
 

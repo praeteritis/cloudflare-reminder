@@ -1,6 +1,5 @@
 import {
   ADMIN_SESSION_COOKIE,
-  NORMAL_USER_TASK_LIMIT,
   USER_SESSION_COOKIE,
 } from "./constants";
 import {
@@ -33,6 +32,13 @@ import {
   listInviteCodes,
   matchAdminInvitePath,
 } from "./invites";
+import {
+  createNotificationChannel,
+  deleteNotificationChannel,
+  listNotificationChannels,
+  matchNotificationChannelPath,
+  updateNotificationChannel,
+} from "./notificationChannels";
 import {
   getUserTaskUsage,
   insertTask,
@@ -82,7 +88,6 @@ export {
   pingHeartbeat,
 } from "./delivery";
 export { buildTaskFromAdminInput, buildTaskUpdateFromAdminInput } from "./taskInput";
-export { assertNormalUserTaskLimit } from "./tasks";
 
 export default {
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext) {
@@ -245,6 +250,12 @@ export default {
       return handleClientErrorReport(request, env, getAuthenticatedActor);
     }
 
+    if (url.pathname === "/notification-channels" && request.method === "GET") {
+      const actor = await getAuthenticatedActor(request, env);
+      if (!actor) return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+      return Response.json({ ok: true, channels: await listNotificationChannels(env, false) });
+    }
+
     if (url.pathname.startsWith("/admin/")) {
       const authError = await authorizeAdminRequest(request, env);
       if (authError) {
@@ -267,6 +278,33 @@ export default {
           const settings = await updateAppSettingsFromInput(env, await readJsonBody(request));
           await logAudit(env, actor, "admin_settings_update", "settings", "app");
           return Response.json({ ok: true, settings: toPublicSettings(settings) });
+        }
+
+        if (url.pathname === "/admin/notification-channels" && request.method === "GET") {
+          return Response.json({ ok: true, channels: await listNotificationChannels(env, true) });
+        }
+
+        if (url.pathname === "/admin/notification-channels" && request.method === "POST") {
+          const channel = await createNotificationChannel(env, await readJsonBody(request));
+          await logAudit(env, actor, "notification_channel_create", "notification_channel", channel.id, {
+            name: channel.name, type: channel.type,
+          });
+          return Response.json({ ok: true, channel }, { status: 201 });
+        }
+
+        const notificationChannelId = matchNotificationChannelPath(url.pathname);
+        if (notificationChannelId && request.method === "PATCH") {
+          const channel = await updateNotificationChannel(env, notificationChannelId, await readJsonBody(request));
+          await logAudit(env, actor, "notification_channel_update", "notification_channel", channel.id, {
+            name: channel.name, type: channel.type, enabled: channel.enabled,
+          });
+          return Response.json({ ok: true, channel });
+        }
+
+        if (notificationChannelId && request.method === "DELETE") {
+          await deleteNotificationChannel(env, notificationChannelId);
+          await logAudit(env, actor, "notification_channel_delete", "notification_channel", notificationChannelId);
+          return Response.json({ ok: true });
         }
 
         if (url.pathname === "/admin/invites" && request.method === "GET") {
@@ -476,7 +514,6 @@ function healthPayload() {
     },
     userApi: {
       auth: "cookie session from /auth/register or /auth/user-login",
-      taskLimit: NORMAL_USER_TASK_LIMIT,
       endpoints: [
         "POST /auth/register",
         "POST /auth/user-login",

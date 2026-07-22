@@ -56,6 +56,7 @@ export function buildTaskFromAdminInput(
   const dueAt = resolveAdminDueAt(record, timezone, now);
   const recurrenceEndAt = resolveRecurrenceEndAt(record, recurrence, timezone, recurrenceType);
   const id = options.id ?? readOptionalString(record, ["id"]) ?? makeId("task");
+  const notificationChannelIds = resolveNotificationChannelIds(record);
 
   if (!isValidTaskId(id)) {
     throw new AdminInputError("id must contain only letters, numbers, underscores, and hyphens");
@@ -96,6 +97,7 @@ export function buildTaskFromAdminInput(
     created_at_utc: nowIso,
     updated_at_utc: nowIso,
     deleted_at_utc: null,
+    notification_channel_ids: JSON.stringify(notificationChannelIds),
   };
 }
 
@@ -123,7 +125,23 @@ export function buildTaskUpdateFromAdminInput(
     nag_interval_minutes: parsed.nag_interval_minutes,
     max_nag_count: parsed.max_nag_count,
     updated_at_utc: parsed.updated_at_utc,
+    notification_channel_ids: JSON.parse(parsed.notification_channel_ids || '["email"]') as string[],
   };
+}
+
+function resolveNotificationChannelIds(record: Record<string, unknown>): string[] {
+  const value = record.notificationChannelIds ?? record.notification_channel_ids;
+  if (value === undefined) {
+    return ["email"];
+  }
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new AdminInputError("notificationChannelIds must be an array of channel ids");
+  }
+  const ids = Array.from(new Set(value.map((item) => item.trim()).filter(Boolean)));
+  if (!ids.length || ids.some((id) => !/^[A-Za-z0-9_-]{3,80}$/.test(id))) {
+    throw new AdminInputError("Select at least one valid notification channel");
+  }
+  return ids;
 }
 
 function resolveAdminDueAt(record: Record<string, unknown>, timezone: string, now: Date): Date {

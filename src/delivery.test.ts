@@ -77,6 +77,12 @@ describe("buildReminderDeliveryKey", () => {
     const key2 = buildReminderDeliveryKey("run_abc", "reminder", timestamp2);
     expect(key1).not.toBe(key2);
   });
+
+  it("separates non-email channel deliveries without changing legacy email keys", () => {
+    const email = buildReminderDeliveryKey("run_1", "reminder", "2026-01-01T00:00:00.000Z");
+    const bark = buildReminderDeliveryKey("run_1", "reminder", "2026-01-01T00:00:00.000Z", "channel_bark");
+    expect(bark).toBe(`${email}:channel_bark`);
+  });
 });
 
 describe("isReminderDeliveryMessage", () => {

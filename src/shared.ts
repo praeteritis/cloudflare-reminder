@@ -555,8 +555,7 @@ export function jsonError(error: unknown): Response {
     return Response.json({ ok: false, error: error.message }, { status: error.status });
   }
 
-  const message = error instanceof Error ? error.message : String(error);
-  return Response.json({ ok: false, error: message }, { status: 500 });
+  return Response.json({ ok: false, error: "Internal server error" }, { status: 500 });
 }
 
 export class AdminInputError extends Error {

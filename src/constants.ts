@@ -16,7 +16,6 @@ export const DELIVERY_CLAIM_STALE_SECONDS = 2 * 60;
 export const DELIVERY_QUEUED_STALE_SECONDS = 5 * 60;
 export const DELIVERY_RETRYING_STALE_SECONDS = 30 * 60;
 export const DELIVERY_RECOVERY_LIMIT = 500;
-export const NORMAL_USER_TASK_LIMIT = 5;
 export const ADMIN_SESSION_COOKIE = "reminder_admin";
 export const USER_SESSION_COOKIE = "reminder_user";
 export const SESSION_MAX_AGE_SECONDS = 12 * 60 * 60;

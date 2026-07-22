@@ -1,9 +1,10 @@
-import { NORMAL_USER_TASK_LIMIT } from "./constants";
 import { AdminInputError, isTaskStatus, isValidTaskId, readListLimit } from "./shared";
 import { buildTaskUpdateFromAdminInput } from "./taskInput";
+import { validateNotificationChannelIds } from "./notificationChannels";
 import type { AdminTaskRow, Env, Task, TaskStatus, TaskUsage } from "./types";
 
 export async function insertTask(env: Env, task: Task): Promise<void> {
+  await validateNotificationChannelIds(env, parseTaskNotificationChannelIds(task.notification_channel_ids));
   await env.DB.prepare(
     `INSERT INTO tasks (
        id,
@@ -24,8 +25,9 @@ export async function insertTask(env: Env, task: Task): Promise<void> {
        current_run_id,
        created_at_utc,
        updated_at_utc,
-       deleted_at_utc
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       deleted_at_utc,
+       notification_channel_ids
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       task.id,
@@ -46,21 +48,20 @@ export async function insertTask(env: Env, task: Task): Promise<void> {
       task.current_run_id,
       task.created_at_utc,
       task.updated_at_utc,
-      task.deleted_at_utc
+      task.deleted_at_utc,
+      task.notification_channel_ids
     )
     .run();
 }
 
 export async function insertTaskForUser(env: Env, task: Task, userId: string): Promise<void> {
-  const activeTaskCount = await countUserLimitedTasks(env, userId);
-  assertNormalUserTaskLimit(activeTaskCount);
+  void userId;
   await insertTask(env, task);
 }
 
 export async function getUserTaskUsage(env: Env, userId: string): Promise<TaskUsage> {
   return {
     used: await countUserLimitedTasks(env, userId),
-    limit: NORMAL_USER_TASK_LIMIT,
   };
 }
 
@@ -75,12 +76,6 @@ export async function countUserLimitedTasks(env: Env, userId: string): Promise<n
     .first<{ count: number }>();
 
   return Number(row?.count ?? 0);
-}
-
-export function assertNormalUserTaskLimit(currentTaskCount: number): void {
-  if (currentTaskCount >= NORMAL_USER_TASK_LIMIT) {
-    throw new AdminInputError(`普通用户最多只能创建 ${NORMAL_USER_TASK_LIMIT} 个任务`, 403);
-  }
 }
 
 export async function softDeleteTask(env: Env, id: string, userId?: string): Promise<Task> {
@@ -251,6 +246,7 @@ export async function updateTaskFromAdminInput(env: Env, id: string, input: unkn
     timezone: env.TIMEZONE,
     now: new Date(),
   });
+  await validateNotificationChannelIds(env, update.notification_channel_ids);
   const statements: D1PreparedStatement[] = [];
 
   statements.push(
@@ -279,7 +275,8 @@ export async function updateTaskFromAdminInput(env: Env, id: string, input: unkn
            nag_interval_minutes = ?,
            max_nag_count = ?,
            current_run_id = NULL,
-           updated_at_utc = ?
+           updated_at_utc = ?,
+           notification_channel_ids = ?
        WHERE id = ?`
     ).bind(
       update.recipient_email,
@@ -295,6 +292,7 @@ export async function updateTaskFromAdminInput(env: Env, id: string, input: unkn
       update.nag_interval_minutes,
       update.max_nag_count,
       update.updated_at_utc,
+      JSON.stringify(update.notification_channel_ids),
       id
     )
   );
@@ -402,5 +400,17 @@ export function serializeTask(task: Task) {
     createdAtUtc: task.created_at_utc,
     updatedAtUtc: task.updated_at_utc,
     deletedAtUtc: task.deleted_at_utc,
+    notificationChannelIds: parseTaskNotificationChannelIds(task.notification_channel_ids),
   };
+}
+
+export function parseTaskNotificationChannelIds(value: string | null | undefined): string[] {
+  try {
+    const parsed = JSON.parse(value || "");
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === "string") && parsed.length
+      ? Array.from(new Set(parsed))
+      : ["email"];
+  } catch {
+    return ["email"];
+  }
 }

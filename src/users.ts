@@ -1,4 +1,3 @@
-import { NORMAL_USER_TASK_LIMIT } from "./constants";
 import { AdminInputError, isValidEmail, makePagedResult, readOptionalString, readPagination, requireRecord } from "./shared";
 import { countUserLimitedTasks } from "./tasks";
 import type { Env, User } from "./types";
@@ -40,7 +39,6 @@ export async function listAdminUsers(env: Env, url: URL) {
     results.map((user) => ({
       ...serializeUser(user),
       taskCount: Number(user.task_count || 0),
-      taskLimit: NORMAL_USER_TASK_LIMIT,
     })),
     pagination,
     Number(totalRow?.count ?? 0)

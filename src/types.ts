@@ -2,6 +2,16 @@ export type RecurrenceType = "none" | "interval";
 export type RecurrenceAnchor = "scheduled_time" | "completion_time";
 export type TaskStatus = "active" | "done" | "paused" | "cancelled";
 export type UserStatus = "active" | "banned";
+export type NotificationChannelType =
+  | "bark"
+  | "gotify"
+  | "pushdeer"
+  | "pushplus"
+  | "telegram"
+  | "dingtalk"
+  | "wecom"
+  | "feishu"
+  | "webhook";
 
 export interface Env {
   DB: D1Database;
@@ -38,6 +48,7 @@ export interface Task {
   created_at_utc: string;
   updated_at_utc: string;
   deleted_at_utc: string | null;
+  notification_channel_ids?: string;
 }
 
 export interface ReminderRun {
@@ -84,6 +95,7 @@ export interface TaskUpdateInput {
   nag_interval_minutes: number;
   max_nag_count: number;
   updated_at_utc: string;
+  notification_channel_ids: string[];
 }
 
 export interface InboundEmailMessage {
@@ -112,6 +124,7 @@ export interface ReminderDeliveryMessage {
   type: ReminderDeliveryType;
   scheduledForUtc: string;
   enqueuedAtUtc: string;
+  channelId?: string;
 }
 
 export interface EmailDeliveryJob {
@@ -128,6 +141,17 @@ export interface EmailDeliveryJob {
   queued_at_utc: string | null;
   last_attempted_at_utc: string | null;
   sent_at_utc: string | null;
+  created_at_utc: string;
+  updated_at_utc: string;
+  channel_id?: string;
+}
+
+export interface NotificationChannel {
+  id: string;
+  name: string;
+  type: NotificationChannelType;
+  config_json: string;
+  enabled: number;
   created_at_utc: string;
   updated_at_utc: string;
 }
@@ -170,7 +194,6 @@ export interface AppSettings {
 
 export interface TaskUsage {
   used: number;
-  limit: number;
 }
 
 export interface Pagination {

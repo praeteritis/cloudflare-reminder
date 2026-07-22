@@ -4,7 +4,7 @@ import { Empty, NoticeBox } from "../components/common";
 import { TASK_BODY_MAX_CHARS, TASK_DEFAULT_MAX_NAG_COUNT, TASK_MAX_INTERVAL_MINUTES, TASK_MAX_NAG_COUNT, TASK_TITLE_MAX_CHARS } from "../constants";
 import { api, errorMessage } from "../lib/api";
 import { countCharacters, durationAmount, durationToMinutes, formatDuration, formatTime, maxDurationAmount, statusLabel, toDateTimeLocalValue } from "../lib/format";
-import type { DueMode, Notice, SessionPayload, Task, TaskUsage } from "../types";
+import type { DueMode, Notice, NotificationChannel, SessionPayload, Task, TaskUsage } from "../types";
 
 export function TasksPage({ session }: { session: SessionPayload }) {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -13,6 +13,7 @@ export function TasksPage({ session }: { session: SessionPayload }) {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Task | null>(null);
+  const [channels, setChannels] = useState<NotificationChannel[]>([]);
   const basePath = session.isAdmin ? "/admin/tasks" : "/user/tasks";
 
   const loadTasks = useCallback(async () => {
@@ -23,7 +24,7 @@ export function TasksPage({ session }: { session: SessionPayload }) {
       setTaskUsage(payload.taskUsage || null);
       const usageEl = document.getElementById("task-usage-inline");
       if (usageEl && payload.taskUsage) {
-        usageEl.textContent = `${payload.taskUsage.used}/${payload.taskUsage.limit} tasks`;
+        usageEl.textContent = `${payload.taskUsage.used} tasks`;
       }
     } catch (error) {
       setNotice({ type: "error", message: errorMessage(error) });
@@ -35,6 +36,12 @@ export function TasksPage({ session }: { session: SessionPayload }) {
   useEffect(() => {
     void loadTasks();
   }, [loadTasks]);
+
+  useEffect(() => {
+    api<{ channels: NotificationChannel[] }>("/notification-channels")
+      .then((payload) => setChannels(payload.channels || []))
+      .catch((error) => setNotice({ type: "error", message: errorMessage(error) }));
+  }, []);
 
   async function processDue() {
     try {
@@ -65,6 +72,7 @@ export function TasksPage({ session }: { session: SessionPayload }) {
       <TaskEditor
         basePath={basePath}
         editing={editing}
+        channels={channels}
         onDone={(message) => {
           setEditing(null);
           setNotice({ type: "ok", message });
@@ -77,7 +85,7 @@ export function TasksPage({ session }: { session: SessionPayload }) {
         <div className="panel-head">
           <div>
             <h2>任务</h2>
-            <p>{session.isAdmin ? "管理员任务列表" : taskUsage ? `${taskUsage.used}/${taskUsage.limit} tasks` : "我的提醒任务"}</p>
+            <p>{session.isAdmin ? "管理员任务列表" : taskUsage ? `${taskUsage.used} tasks` : "我的提醒任务"}</p>
           </div>
           <div className="head-actions">
             {session.isAdmin && (
@@ -105,7 +113,7 @@ export function TasksPage({ session }: { session: SessionPayload }) {
         ) : tasks.length ? (
           <div className="task-list">
             {tasks.map((task) => (
-              <TaskCard key={task.id} task={task} isAdmin={session.isAdmin} onEdit={setEditing} onAction={runTaskAction} />
+              <TaskCard key={task.id} task={task} channels={channels} isAdmin={session.isAdmin} onEdit={setEditing} onAction={runTaskAction} />
             ))}
           </div>
         ) : (
@@ -119,12 +127,14 @@ export function TasksPage({ session }: { session: SessionPayload }) {
 function TaskEditor({
   basePath,
   editing,
+  channels,
   onDone,
   onCancel,
   onError,
 }: {
   basePath: string;
   editing: Task | null;
+  channels: NotificationChannel[];
   onDone: (message: string) => Promise<void>;
   onCancel: () => void;
   onError: (message: string) => void;
@@ -173,6 +183,11 @@ function TaskEditor({
       dueMode === "relative" ? durationToMinutes(data.get("relativeAmount"), data.get("relativeUnit")) : null;
     const recurrenceEndAt = String(data.get("recurrenceEndAt") || "");
     const maxNagCount = Number(data.get("maxNagCount") || TASK_DEFAULT_MAX_NAG_COUNT);
+    const notificationChannelIds = data.getAll("notificationChannelIds").map(String);
+    if (!notificationChannelIds.length) {
+      onError("请至少选择一个通知渠道");
+      return;
+    }
     if (nagIntervalMinutes > TASK_MAX_INTERVAL_MINUTES || (recurrenceIntervalMinutes ?? 0) > TASK_MAX_INTERVAL_MINUTES) {
       onError("提醒间隔最多 366 天");
       return;
@@ -197,6 +212,7 @@ function TaskEditor({
       body,
       nagIntervalMinutes,
       maxNagCount,
+      notificationChannelIds,
     };
     if (dueMode === "relative") {
       payload.minutesFromNow = recurrenceIntervalMinutes;
@@ -268,6 +284,26 @@ function TaskEditor({
           />
           <span className="field-hint">{countCharacters(bodyValue)}/{TASK_BODY_MAX_CHARS}</span>
         </label>
+        <fieldset className="channel-picker">
+          <legend>通知渠道</legend>
+          <p className="field-help">每个渠道独立投递；某个渠道失败不会重复发送其他已成功渠道。</p>
+          <div className="channel-options">
+            {channels.map((channel) => (
+              <label className="channel-option" key={channel.id}>
+                <input
+                  name="notificationChannelIds"
+                  type="checkbox"
+                  value={channel.id}
+                  defaultChecked={(editing?.notificationChannelIds || ["email"]).includes(channel.id)}
+                />
+                <span>
+                  <strong>{channel.name}</strong>
+                  <small>{channel.type === "email" ? "发送到任务收件邮箱" : channel.type}</small>
+                </span>
+              </label>
+            ))}
+          </div>
+        </fieldset>
         <div className="segmented">
           <button type="button" aria-pressed={dueMode === "relative"} onClick={() => setDueMode("relative")}>
             相对时间
@@ -381,11 +417,13 @@ function TaskEditor({
 
 function TaskCard({
   task,
+  channels,
   isAdmin,
   onEdit,
   onAction,
 }: {
   task: Task;
+  channels: NotificationChannel[];
   isAdmin: boolean;
   onEdit: (task: Task) => void;
   onAction: (task: Task, action: "pause" | "resume" | "cancel" | "delete") => Promise<void>;
@@ -406,6 +444,11 @@ function TaskCard({
           {recurrenceEnd && <span className="pill">{recurrenceEnd}</span>}
           <span className="pill">追 {formatDuration(task.nagIntervalMinutes)}</span>
           <span className="pill">最多追 {task.maxNagCount} 次</span>
+          {(task.notificationChannelIds || ["email"]).map((channelId) => (
+            <span className="pill channel-pill" key={channelId}>
+              {channels.find((channel) => channel.id === channelId)?.name || channelId}
+            </span>
+          ))}
           {task.currentRun && (
             <span className="pill">
               run {task.currentRun.status || "open"} / {Number(task.currentRun.sentCount || 0)}

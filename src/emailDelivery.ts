@@ -11,6 +11,7 @@ import {
   sameEmailAddress,
 } from "./shared";
 import { calculateNextDueAt } from "./taskSchedule";
+import { parseTaskNotificationChannelIds } from "./tasks";
 import type {
   AuthenticatedActor,
   EmailSendResult,
@@ -152,6 +153,9 @@ export async function handleInboundReply(message: InboundEmailMessage, env: Env)
     completedBy,
   });
 
+  if (!parseTaskNotificationChannelIds(row.notification_channel_ids).includes("email")) {
+    return;
+  }
   const completionEmailResult = await sendCompletionEmail(env, row, runId, completedAt, nextDueAt);
   if (completionEmailResult.success) {
     await env.DB.prepare(

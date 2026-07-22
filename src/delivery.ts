@@ -12,10 +12,11 @@ import {
   NAG_SCAN_LIMIT,
   SCHEDULER_MAX_LOOPS,
 } from "./constants";
-import { sendReminderEmail } from "./emailDelivery";
+import { sendReminderNotification } from "./notificationDelivery";
 import { errorMessageForLog, logAudit, sanitizeLogText } from "./observability";
 import { makeId } from "./shared";
 import { calculateNextDueAt, calculateNextNagAt } from "./taskSchedule";
+import { parseTaskNotificationChannelIds } from "./tasks";
 import type {
   EmailDeliveryJob,
   Env,
@@ -90,6 +91,9 @@ async function cleanupExpiredOperationalRows(env: Env, now: Date): Promise<numbe
       `DELETE FROM email_delivery_jobs
        WHERE updated_at_utc < ?
          AND status IN ('sent', 'failed', 'dead_lettered', 'skipped')`
+    ).bind(cutoffIso),
+    env.DB.prepare(
+      `DELETE FROM notification_delivery_cycles WHERE completed_at_utc < ?`
     ).bind(cutoffIso),
     env.DB.prepare(
       `DELETE FROM reminder_runs
@@ -168,6 +172,7 @@ async function createRunsForDueTasks(env: Env, now: Date, nowIso: string): Promi
 
   for (const task of tasks) {
     const runId = makeId("run");
+    const channelIds = parseTaskNotificationChannelIds(task.notification_channel_ids);
     const [acquireResult, insertRunResult] = await env.DB.batch([
       env.DB.prepare(
         `UPDATE tasks
@@ -197,6 +202,15 @@ async function createRunsForDueTasks(env: Env, now: Date, nowIso: string): Promi
            AND deleted_at_utc IS NULL
            AND next_due_at_utc <= ?`
       ).bind(runId, nowIso, nowIso, task.id, runId, nowIso),
+      ...channelIds.map((channelId) => createEmailDeliveryJobStatement(env, {
+        deliveryKey: buildReminderDeliveryKey(runId, "reminder", task.next_due_at_utc, channelId),
+        runId,
+        taskId: task.id,
+        type: "reminder",
+        scheduledForUtc: task.next_due_at_utc,
+        channelId,
+        nowIso,
+      })),
     ]);
 
     if (acquireResult.meta.changes === 0 || insertRunResult.meta.changes === 0) {
@@ -211,14 +225,6 @@ async function createRunsForDueTasks(env: Env, now: Date, nowIso: string): Promi
     }
 
     createdCount += 1;
-    await createEmailDeliveryJob(env, {
-      deliveryKey: buildReminderDeliveryKey(runId, "reminder", task.next_due_at_utc),
-      runId,
-      taskId: task.id,
-      type: "reminder",
-      scheduledForUtc: task.next_due_at_utc,
-      nowIso,
-    });
   }
 
   return createdCount;
@@ -249,27 +255,28 @@ async function createJobsForDueNagReminders(env: Env, nowIso: string): Promise<n
 
   for (const row of rows) {
     const scheduledForUtc = row.run_next_nag_at_utc ?? nowIso;
-    await createEmailDeliveryJob(env, {
-      deliveryKey: buildReminderDeliveryKey(row.run_id, "nag", scheduledForUtc),
-      runId: row.run_id,
-      taskId: row.id,
-      type: "nag",
-      scheduledForUtc,
-      nowIso,
-    });
-
-    await env.DB.prepare(
+    const channelIds = parseTaskNotificationChannelIds(row.notification_channel_ids);
+    const results = await env.DB.batch([
+      ...channelIds.map((channelId) => createEmailDeliveryJobStatement(env, {
+        deliveryKey: buildReminderDeliveryKey(row.run_id, "nag", scheduledForUtc, channelId),
+        runId: row.run_id,
+        taskId: row.id,
+        type: "nag",
+        scheduledForUtc,
+        channelId,
+        nowIso,
+      })),
+      env.DB.prepare(
       `UPDATE reminder_runs
        SET next_nag_at_utc = NULL,
            updated_at_utc = ?
-       WHERE id = ?
+      WHERE id = ?
          AND status = 'open'
          AND next_nag_at_utc = ?`
-    )
-      .bind(nowIso, row.run_id, scheduledForUtc)
-      .run();
+      ).bind(nowIso, row.run_id, scheduledForUtc),
+    ]);
 
-    createdCount += 1;
+    if (results.at(-1)?.meta.changes) createdCount += 1;
   }
 
   return createdCount;
@@ -371,33 +378,36 @@ async function closeRunAfterMaxNagCount(env: Env, task: TaskRunRow, runId: strin
   });
 }
 
-export function buildReminderDeliveryKey(runId: string, type: ReminderDeliveryType, scheduledForUtc: string): string {
-  return `${runId}:${type}:${scheduledForUtc}`;
+export function buildReminderDeliveryKey(runId: string, type: ReminderDeliveryType, scheduledForUtc: string, channelId = "email"): string {
+  const base = `${runId}:${type}:${scheduledForUtc}`;
+  return channelId === "email" ? base : `${base}:${channelId}`;
 }
 
-async function createEmailDeliveryJob(
-  env: Env,
-  input: {
-    deliveryKey: string;
-    runId: string;
-    taskId: string;
-    type: ReminderDeliveryType;
-    scheduledForUtc: string;
-    nowIso: string;
-  }
-): Promise<boolean> {
-  const result = await env.DB.prepare(
+function createEmailDeliveryJobStatement(env: Env, input: {
+  deliveryKey: string;
+  runId: string;
+  taskId: string;
+  type: ReminderDeliveryType;
+  scheduledForUtc: string;
+  channelId: string;
+  nowIso: string;
+}): D1PreparedStatement {
+  return env.DB.prepare(
     `INSERT OR IGNORE INTO email_delivery_jobs (
        delivery_key,
        run_id,
        task_id,
        type,
        scheduled_for_utc,
+       channel_id,
        status,
        attempt_count,
        created_at_utc,
        updated_at_utc
-     ) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?)`
+     )
+     SELECT ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?
+     FROM reminder_runs
+     WHERE id = ?`
   )
     .bind(
       input.deliveryKey,
@@ -405,12 +415,11 @@ async function createEmailDeliveryJob(
       input.taskId,
       input.type,
       input.scheduledForUtc,
+      input.channelId,
       input.nowIso,
-      input.nowIso
-    )
-    .run();
-
-  return result.meta.changes > 0;
+      input.nowIso,
+      input.runId
+    );
 }
 
 async function recoverStaleDeliveryJobs(env: Env, now: Date): Promise<number> {
@@ -544,6 +553,7 @@ function toReminderDeliveryMessage(job: EmailDeliveryJob, enqueuedAtUtc: string)
     type: job.type,
     scheduledForUtc: job.scheduled_for_utc,
     enqueuedAtUtc,
+    channelId: job.channel_id || "email",
   };
 }
 
@@ -572,7 +582,8 @@ export async function processReminderDeliveryMessage(
     return "already_done";
   }
 
-  const result = await sendReminderEmail(env, row, body.runId, body.type, body.deliveryKey);
+  const channelId = body.channelId || "email";
+  const result = await sendReminderNotification(env, row, body.runId, body.type, body.deliveryKey, channelId);
   const now = new Date();
   const nowIso = now.toISOString();
 
@@ -603,7 +614,6 @@ export async function processReminderDeliveryMessage(
     return "retry";
   }
 
-  await updateRunAfterReminderDelivery(env, row, body.runId, body.type, now);
   await env.DB.prepare(
     `UPDATE email_delivery_jobs
      SET status = 'sent',
@@ -616,6 +626,7 @@ export async function processReminderDeliveryMessage(
   )
     .bind(result.provider, result.providerMessageId, nowIso, nowIso, body.deliveryKey)
     .run();
+  await completeDeliveryCycleIfReady(env, row, body.runId, body.type, body.scheduledForUtc, now);
 
   void queueAttempts;
   return "sent";
@@ -634,7 +645,8 @@ export function isReminderDeliveryMessage(value: unknown): value is ReminderDeli
     typeof record.taskId === "string" &&
     (record.type === "reminder" || record.type === "nag") &&
     typeof record.scheduledForUtc === "string" &&
-    typeof record.enqueuedAtUtc === "string"
+    typeof record.enqueuedAtUtc === "string" &&
+    (record.channelId === undefined || typeof record.channelId === "string")
   );
 }
 
@@ -647,12 +659,13 @@ async function ensureEmailDeliveryJobFromMessage(env: Env, message: ReminderDeli
        task_id,
        type,
        scheduled_for_utc,
+       channel_id,
        status,
        attempt_count,
        queued_at_utc,
        created_at_utc,
        updated_at_utc
-     ) VALUES (?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)`
+     ) VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, ?, ?, ?)`
   )
     .bind(
       message.deliveryKey,
@@ -660,11 +673,35 @@ async function ensureEmailDeliveryJobFromMessage(env: Env, message: ReminderDeli
       message.taskId,
       message.type,
       message.scheduledForUtc,
+      message.channelId || "email",
       message.enqueuedAtUtc,
       message.enqueuedAtUtc,
       nowIso
     )
     .run();
+}
+
+async function completeDeliveryCycleIfReady(
+  env: Env,
+  task: TaskRunRow,
+  runId: string,
+  type: ReminderDeliveryType,
+  scheduledForUtc: string,
+  completedAt: Date
+): Promise<void> {
+  const pending = await env.DB.prepare(
+    `SELECT COUNT(*) AS count FROM email_delivery_jobs
+     WHERE run_id = ? AND type = ? AND scheduled_for_utc = ?
+       AND status NOT IN ('sent', 'skipped')`
+  ).bind(runId, type, scheduledForUtc).first<{ count: number }>();
+  if (Number(pending?.count || 0) > 0) return;
+  const cycleKey = `${runId}:${type}:${scheduledForUtc}`;
+  const claimed = await env.DB.prepare(
+    `INSERT OR IGNORE INTO notification_delivery_cycles
+       (cycle_key, run_id, type, scheduled_for_utc, completed_at_utc)
+     VALUES (?, ?, ?, ?, ?)`
+  ).bind(cycleKey, runId, type, scheduledForUtc, completedAt.toISOString()).run();
+  if (claimed.meta.changes > 0) await updateRunAfterReminderDelivery(env, task, runId, type, completedAt);
 }
 
 async function claimEmailDeliveryJob(

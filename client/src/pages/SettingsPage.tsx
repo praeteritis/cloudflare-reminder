@@ -1,6 +1,7 @@
 import { Copy, Download, Plus, Save, Trash2 } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Modal, Empty, NoticeBox, Pager } from "../components/common";
+import { NotificationChannelsPanel } from "../components/NotificationChannelsPanel";
 import { PAGE_SIZE } from "../constants";
 import { api, errorMessage } from "../lib/api";
 import { copyText, downloadText } from "../lib/files";
@@ -133,6 +134,7 @@ export function SettingsPage({ onSettingsChange }: { onSettingsChange: () => Pro
 
   return (
     <section className="settings-grid-page">
+      <NotificationChannelsPanel />
       <section className="panel">
         <div className="panel-head">
           <div>

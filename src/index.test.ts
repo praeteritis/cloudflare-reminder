@@ -6,7 +6,6 @@ import {
   buildReminderDeliveryKey,
   calculateNextNagAt,
   calculateNextDueAt,
-  assertNormalUserTaskLimit,
   extractRunId,
   formatInTimezone,
   getFirstMeaningfulLine,
@@ -885,16 +884,6 @@ describe("admin task input", () => {
       nag_interval_minutes: 60,
       max_nag_count: 3,
     });
-  });
-});
-
-describe("normal user task limits", () => {
-  it("allows normal users below the task limit", () => {
-    expect(() => assertNormalUserTaskLimit(4)).not.toThrow();
-  });
-
-  it("rejects normal users at the task limit", () => {
-    expect(() => assertNormalUserTaskLimit(5)).toThrow("普通用户最多只能创建 5 个任务");
   });
 });
 

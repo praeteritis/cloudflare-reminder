@@ -3,6 +3,33 @@ import { buildTaskFromAdminInput, buildTaskUpdateFromAdminInput } from "./taskIn
 import { AdminInputError } from "./shared";
 
 describe("buildTaskFromAdminInput", () => {
+  it("defaults existing-style tasks to the built-in email channel", () => {
+    const task = buildTaskFromAdminInput({
+      recipientEmail: "user@example.com",
+      title: "Reminder",
+      minutesFromNow: 10,
+    });
+    expect(JSON.parse(task.notification_channel_ids || "[]")).toEqual(["email"]);
+  });
+
+  it("deduplicates selected notification channels", () => {
+    const task = buildTaskFromAdminInput({
+      recipientEmail: "user@example.com",
+      title: "Reminder",
+      minutesFromNow: 10,
+      notificationChannelIds: ["email", "channel_123", "channel_123"],
+    });
+    expect(JSON.parse(task.notification_channel_ids || "[]")).toEqual(["email", "channel_123"]);
+  });
+
+  it("requires at least one notification channel", () => {
+    expect(() => buildTaskFromAdminInput({
+      recipientEmail: "user@example.com",
+      title: "Reminder",
+      minutesFromNow: 10,
+      notificationChannelIds: [],
+    })).toThrow("Select at least one valid notification channel");
+  });
   const now = new Date("2026-06-09T10:00:00Z");
 
   it("builds task with required fields only", () => {
