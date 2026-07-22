@@ -15,6 +15,9 @@ function run(command, commandArgs, options = {}) {
 
   if (result.status !== 0) {
     const rendered = [command, ...commandArgs].join(" ");
+    if (result.error) {
+      process.stderr.write(`${result.error.message}\n`);
+    }
     if (options.capture && result.stderr) {
       process.stderr.write(result.stderr);
     }
@@ -22,6 +25,15 @@ function run(command, commandArgs, options = {}) {
   }
 
   return options.capture ? result.stdout.trim() : "";
+}
+
+function runNpm(commandArgs) {
+  const npmCli = process.env.npm_execpath;
+  if (npmCli) {
+    return run(process.execPath, [npmCli, ...commandArgs]);
+  }
+
+  return run(process.platform === "win32" ? "npm.cmd" : "npm", commandArgs);
 }
 
 function output(command, commandArgs) {
@@ -65,7 +77,7 @@ if (porcelain) {
 
 console.log(`Releasing ${branch} to ${remote} with a patch version bump...`);
 
-run("npm", ["version", "patch", "--no-git-tag-version"]);
+runNpm(["version", "patch", "--no-git-tag-version"]);
 
 const packageJson = JSON.parse(await readFile("package.json", "utf8"));
 const version = packageJson.version;
@@ -81,7 +93,7 @@ run("git", ["push", remote, branch], {
 
 if (!hasFlag("--no-deploy")) {
   console.log(`Push succeeded. Deploying with npm run ${deployScript}...`);
-  run("npm", ["run", deployScript]);
+  runNpm(["run", deployScript]);
 }
 
 console.log(`Released v${version}.`);
