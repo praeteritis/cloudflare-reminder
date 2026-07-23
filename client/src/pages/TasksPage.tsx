@@ -39,7 +39,10 @@ export function TasksPage({ session }: { session: SessionPayload }) {
 
   useEffect(() => {
     api<{ channels: NotificationChannel[] }>("/notification-channels")
-      .then((payload) => setChannels(payload.channels || []))
+      .then((payload) => {
+        if (!Array.isArray(payload.channels)) throw new Error("通知渠道加载失败，请刷新页面重试");
+        setChannels(payload.channels);
+      })
       .catch((error) => setNotice({ type: "error", message: errorMessage(error) }));
   }, []);
 
@@ -301,7 +304,7 @@ function TaskEditor({
           <legend>通知渠道 *</legend>
           <p className="field-help">请至少选择一个渠道。每个渠道独立投递；某个渠道失败不会重复发送其他已成功渠道。</p>
           <div className="channel-options">
-            {channels.map((channel) => (
+            {channels.length ? channels.map((channel) => (
               <label className="channel-option" key={channel.id}>
                 <input
                   name="notificationChannelIds"
@@ -314,7 +317,7 @@ function TaskEditor({
                   <small>{channel.type === "email" ? "发送到任务收件邮箱" : channel.type}</small>
                 </span>
               </label>
-            ))}
+            )) : <p className="field-help" role="alert">暂无可选通知渠道，请刷新页面或联系管理员。</p>}
           </div>
         </fieldset>
         <div className="segmented">
