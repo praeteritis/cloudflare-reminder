@@ -33,7 +33,7 @@ async function sendCustomNotification(
   channel: NotificationChannel
 ): Promise<EmailSendResult> {
   const title = task.title;
-  const content = `${task.body}\n\n任务编号：${runId}${type === "nag" ? "\n这是一次追提醒。" : ""}`;
+  const content = buildReminderNotificationContent(task.body, type);
   const result = await deliverNotificationChannel(channel, title, content);
   const { success, provider, providerMessageId, errorMessage } = result;
 
@@ -49,6 +49,10 @@ async function sendCustomNotification(
     error: errorMessage ? sanitizeLogText(errorMessage, 240) : null,
   });
   return result;
+}
+
+export function buildReminderNotificationContent(body: string, type: ReminderDeliveryType): string {
+  return type === "nag" ? `${body}\n\n这是一次追提醒。` : body;
 }
 
 export async function sendNotificationChannelTest(channel: NotificationChannel): Promise<EmailSendResult> {

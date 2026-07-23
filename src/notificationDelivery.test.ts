@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { matchNotificationChannelTestPath } from "./notificationChannels";
-import { buildChannelRequest, sendNotificationChannelTest, validateProviderResponse } from "./notificationDelivery";
+import {
+  buildChannelRequest,
+  buildReminderNotificationContent,
+  sendNotificationChannelTest,
+  validateProviderResponse,
+} from "./notificationDelivery";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -8,6 +13,11 @@ afterEach(() => {
 });
 
 describe("notification channel requests", () => {
+  it("does not expose a task or run number in reminder content", () => {
+    expect(buildReminderNotificationContent("该喝水了", "reminder")).toBe("该喝水了");
+    expect(buildReminderNotificationContent("该喝水了", "nag")).toBe("该喝水了\n\n这是一次追提醒。");
+  });
+
   it("builds a signed DingTalk URL from access token and secret", async () => {
     vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
     const request = await buildChannelRequest("dingtalk", { accessToken: "token", secret: "SECsecret" }, "title", "body");
