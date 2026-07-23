@@ -269,7 +269,7 @@ function TaskEditor({
       <div className="panel-head">
         <div>
           <h2>{editing ? "编辑提醒" : "新建提醒"}</h2>
-          <p>{editing ? editing.title : "安排邮件提醒"}</p>
+          <p>{editing ? editing.title : "安排多渠道提醒"}</p>
         </div>
       </div>
       <form className="form-grid" key={editing?.id || "new"} onSubmit={(event) => { void submit(event); }}>

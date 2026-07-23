@@ -1023,6 +1023,7 @@ describe("app shell", () => {
     });
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(await response.text()).toContain('id="root"');
     expect(assets.fetch).toHaveBeenCalled();
   });
