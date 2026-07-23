@@ -41,7 +41,7 @@ max_batch_timeout = 5
 directory = "./dist"
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/auth/*", "/admin/*", "/user/*", "/notification-channels", "/client-error", "/health"]
+run_worker_first = ["/", "/tasks", "/users", "/settings", "/announcement", "/logs", "/auth/*", "/admin/*", "/user/*", "/notification-channels", "/client-error", "/health"]
 
 # Runtime variables are configured in the Worker dashboard and kept on deploy:
 # FROM_EMAIL, REPLY_EMAIL, EMAIL_DELIVERY.

@@ -16,12 +16,14 @@ addCheck("wrangler.toml exists", true);
 addCheck("wrangler.toml keeps dashboard variables on deploy", /keep_vars\s*=\s*true/.test(wranglerToml));
 addCheck("DB binding is configured", /binding\s*=\s*"DB"/.test(wranglerToml));
 addCheck("Public notification channel API runs through Worker", wranglerToml.includes('"/notification-channels"'));
+addCheck("Public app shell runs through Worker", wranglerToml.includes('"/tasks"'));
 addCheck("D1 database name is configured", /database_name\s*=\s*"personal-reminder"/.test(wranglerToml));
 addCheck("No database_id is committed", !/database_id\s*=\s*"[0-9a-f-]{36}"/i.test(wranglerToml));
 addCheck("No FROM_EMAIL is committed", !/FROM_EMAIL\s*=/.test(wranglerToml));
 addCheck("No REPLY_EMAIL is committed", !/REPLY_EMAIL\s*=/.test(wranglerToml));
 addCheck("wrangler.local.toml exists", hasLocalConfig);
 addCheck("Local notification channel API runs through Worker", localConfig.includes('"/notification-channels"'));
+addCheck("Local app shell runs through Worker", localConfig.includes('"/tasks"'));
 addCheck(
   "Local D1 database_id is configured",
   /database_id\s*=\s*"[0-9a-f-]{36}"/i.test(localConfig)
