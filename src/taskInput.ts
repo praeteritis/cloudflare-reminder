@@ -56,8 +56,8 @@ export function buildTaskFromAdminInput(
   const id = options.id ?? readOptionalString(record, ["id"]) ?? makeId("task");
   const notificationChannelIds = resolveNotificationChannelIds(record);
   const taskType = resolveTaskType(record, notificationChannelIds);
-  if (taskType === "confirmation" && !notificationChannelIds.includes("email")) {
-    throw new AdminInputError("Confirmation tasks must include the email notification channel");
+  if (taskType === "confirmation" && (notificationChannelIds.length !== 1 || notificationChannelIds[0] !== "email")) {
+    throw new AdminInputError("Confirmation tasks can only use the email notification channel");
   }
   const recipientEmail = notificationChannelIds.includes("email")
     ? readRequiredString(record, ["recipientEmail", "recipient_email"], "recipientEmail")

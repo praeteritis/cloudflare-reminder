@@ -15,6 +15,7 @@ describe("buildTaskFromAdminInput", () => {
 
   it("deduplicates selected notification channels", () => {
     const task = buildTaskFromAdminInput({
+      taskType: "scheduled",
       recipientEmail: "user@example.com",
       title: "Reminder",
       minutesFromNow: 10,
@@ -57,7 +58,17 @@ describe("buildTaskFromAdminInput", () => {
       title: "Confirm me",
       minutesFromNow: 10,
       notificationChannelIds: ["channel_123"],
-    })).toThrow("Confirmation tasks must include the email notification channel");
+    })).toThrow("Confirmation tasks can only use the email notification channel");
+  });
+
+  it("rejects additional channels on a confirmation task", () => {
+    expect(() => buildTaskFromAdminInput({
+      taskType: "confirmation",
+      recipientEmail: "user@example.com",
+      title: "Confirm me",
+      minutesFromNow: 10,
+      notificationChannelIds: ["email", "channel_123"],
+    })).toThrow("Confirmation tasks can only use the email notification channel");
   });
 
   it("builds an explicit scheduled task without completion tracking", () => {

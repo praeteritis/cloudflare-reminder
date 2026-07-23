@@ -15,24 +15,32 @@ afterEach(() => {
 
 describe("notification channel requests", () => {
   it("only asks for an email reply on confirmation tasks", () => {
+    const sentAt = new Date("2026-07-23T01:30:45.000Z");
     expect(buildReminderEmailContent({
       task_type: "scheduled",
       title: "喝水",
       body: "现在喝水",
-    }, "run_123")).toEqual({ subject: "喝水", text: "现在喝水" });
+    }, "run_123", sentAt)).toEqual({
+      subject: "喝水",
+      text: "现在喝水\n\n发送时间：2026-07-23 09:30:45 GMT+08:00",
+    });
 
     const confirmation = buildReminderEmailContent({
       task_type: "confirmation",
       title: "吃药",
       body: "请确认完成",
-    }, "run_123");
+    }, "run_123", sentAt);
     expect(confirmation.subject).toContain("[R:run_123]");
     expect(confirmation.text).toContain("回复第一行只写");
+    expect(confirmation.text).toContain("发送时间：2026-07-23 09:30:45 GMT+08:00");
   });
 
   it("does not expose a task or run number in reminder content", () => {
-    expect(buildReminderNotificationContent("该喝水了", "reminder")).toBe("该喝水了");
-    expect(buildReminderNotificationContent("该喝水了", "nag")).toBe("该喝水了\n\n这是一次追提醒。");
+    const sentAt = new Date("2026-07-23T01:30:45.000Z");
+    expect(buildReminderNotificationContent("该喝水了", "reminder", sentAt))
+      .toBe("该喝水了\n\n发送时间：2026-07-23 09:30:45 GMT+08:00");
+    expect(buildReminderNotificationContent("该喝水了", "nag", sentAt))
+      .toBe("该喝水了\n\n这是一次追提醒。\n\n发送时间：2026-07-23 09:30:45 GMT+08:00");
   });
 
   it("builds a signed DingTalk URL from access token and secret", async () => {

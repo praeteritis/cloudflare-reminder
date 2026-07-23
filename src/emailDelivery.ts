@@ -29,7 +29,7 @@ export async function sendReminderEmail(
   type: ReminderDeliveryType,
   idempotencyKey: string
 ): Promise<EmailSendResult> {
-  const { subject, text } = buildReminderEmailContent(task, runId);
+  const { subject, text } = buildReminderEmailContent(task, runId, new Date());
 
   return sendEmail(env, {
     runId,
@@ -42,12 +42,13 @@ export async function sendReminderEmail(
   });
 }
 
-export function buildReminderEmailContent(task: Pick<Task, "title" | "body" | "task_type">, runId: string): {
+export function buildReminderEmailContent(task: Pick<Task, "title" | "body" | "task_type">, runId: string, sentAt = new Date()): {
   subject: string;
   text: string;
 } {
+  const sentAtLine = `发送时间：${formatInTimezone(sentAt, DEFAULT_TIMEZONE)} GMT+08:00`;
   if ((task.task_type ?? "confirmation") === "scheduled") {
-    return { subject: task.title, text: task.body };
+    return { subject: task.title, text: `${task.body}\n\n${sentAtLine}` };
   }
   return {
     subject: `[R:${runId}] ${task.title}`,
@@ -56,7 +57,9 @@ export function buildReminderEmailContent(task: Pick<Task, "title" | "body" | "t
 ---
 完成后，请直接回复本邮件。
 回复第一行只写：
-1`,
+1
+
+${sentAtLine}`,
   };
 }
 

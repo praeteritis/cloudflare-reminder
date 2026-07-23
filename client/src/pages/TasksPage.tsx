@@ -202,8 +202,8 @@ function TaskEditor({
       onError("请至少选择一个通知渠道");
       return;
     }
-    if (taskType === "confirmation" && !notificationChannelIds.includes("email")) {
-      onError("需要确认完成的任务必须选择邮件渠道");
+    if (taskType === "confirmation" && (notificationChannelIds.length !== 1 || notificationChannelIds[0] !== "email")) {
+      onError("需要确认完成的任务只能选择邮件渠道");
       return;
     }
     if (nagIntervalMinutes > TASK_MAX_INTERVAL_MINUTES || (recurrenceIntervalMinutes ?? 0) > TASK_MAX_INTERVAL_MINUTES) {
@@ -309,7 +309,7 @@ function TaskEditor({
                 checked={taskType === "confirmation"}
                 onChange={() => {
                   setTaskType("confirmation");
-                  setSelectedChannelIds((current) => current.includes("email") ? current : [...current, "email"]);
+                  setSelectedChannelIds(["email"]);
                 }}
               />
               <span><strong>需要确认完成</strong><small>邮件回复 1 完成；未完成时发送追提醒</small></span>
@@ -341,7 +341,7 @@ function TaskEditor({
         </label>
         <fieldset className="channel-picker">
           <legend>通知渠道 *</legend>
-          <p className="field-help">请至少选择一个渠道。每个渠道独立投递；某个渠道失败不会重复发送其他已成功渠道。</p>
+          <p className="field-help">普通任务可选择一个或多个渠道；需要确认完成的任务只能使用邮件。</p>
           <div className="channel-options">
             {channels.length ? channels.map((channel) => (
               <label className="channel-option" key={channel.id}>
@@ -350,7 +350,7 @@ function TaskEditor({
                   type="checkbox"
                   value={channel.id}
                   checked={selectedChannelIds.includes(channel.id)}
-                  disabled={taskType === "confirmation" && channel.id === "email"}
+                  disabled={taskType === "confirmation"}
                   onChange={(event) => {
                     setSelectedChannelIds((current) => event.target.checked
                       ? [...current, channel.id]

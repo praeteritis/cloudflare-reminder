@@ -33,11 +33,12 @@ async function sendCustomNotification(
   channel: NotificationChannel
 ): Promise<EmailSendResult> {
   const title = task.title;
-  const content = buildReminderNotificationContent(task.body, type);
+  const sentAt = new Date();
+  const content = buildReminderNotificationContent(task.body, type, sentAt);
   const result = await deliverNotificationChannel(channel, title, content);
   const { success, provider, providerMessageId, errorMessage } = result;
 
-  const now = new Date().toISOString();
+  const now = sentAt.toISOString();
   await env.DB.prepare(
     `INSERT INTO send_logs (
        run_id, task_id, type, recipient_email, subject, provider, provider_message_id,
@@ -51,8 +52,9 @@ async function sendCustomNotification(
   return result;
 }
 
-export function buildReminderNotificationContent(body: string, type: ReminderDeliveryType): string {
-  return type === "nag" ? `${body}\n\n这是一次追提醒。` : body;
+export function buildReminderNotificationContent(body: string, type: ReminderDeliveryType, sentAt = new Date()): string {
+  const reminderType = type === "nag" ? "\n\n这是一次追提醒。" : "";
+  return `${body}${reminderType}\n\n发送时间：${formatInTimezone(sentAt, DEFAULT_TIMEZONE)} GMT+08:00`;
 }
 
 export async function sendNotificationChannelTest(channel: NotificationChannel): Promise<EmailSendResult> {
