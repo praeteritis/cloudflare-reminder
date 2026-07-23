@@ -1,4 +1,5 @@
 import { AdminInputError, isTaskStatus, isValidTaskId, readListLimit } from "./shared";
+import { DEFAULT_TIMEZONE } from "./constants";
 import { buildTaskUpdateFromAdminInput } from "./taskInput";
 import { validateNotificationChannelIds } from "./notificationChannels";
 import type { AdminTaskRow, Env, Task, TaskStatus, TaskUsage } from "./types";
@@ -387,7 +388,7 @@ export function serializeTask(task: Task) {
     title: task.title,
     body: task.body,
     status: task.status,
-    timezone: task.timezone,
+    timezone: DEFAULT_TIMEZONE,
     firstDueAtUtc: task.first_due_at_utc,
     nextDueAtUtc: task.next_due_at_utc,
     recurrenceType: task.recurrence_type,

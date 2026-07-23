@@ -44,8 +44,11 @@ not_found_handling = "single-page-application"
 run_worker_first = ["/auth/*", "/admin/*", "/user/*", "/client-error", "/health"]
 
 # Runtime variables are configured in the Worker dashboard and kept on deploy:
-# TIMEZONE, FROM_EMAIL, REPLY_EMAIL, EMAIL_DELIVERY.
+# FROM_EMAIL, REPLY_EMAIL, EMAIL_DELIVERY.
 # Local development reads the same keys from .dev.vars.
+
+[vars]
+TIMEZONE = "Asia/Shanghai"
 
 [[d1_databases]]
 binding = "DB"

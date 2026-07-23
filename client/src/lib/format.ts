@@ -1,4 +1,4 @@
-import { TASK_MAX_INTERVAL_MINUTES } from "../constants";
+import { DISPLAY_TIME_ZONE, DISPLAY_TIME_ZONE_LABEL, TASK_MAX_INTERVAL_MINUTES } from "../constants";
 import type { LogRow } from "../types";
 
 export function inviteExpirationFromDays(data: FormData): string {
@@ -40,8 +40,21 @@ export function toDateTimeLocalValue(value?: string | null): string {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
-  return local.toISOString().slice(0, 16);
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: DISPLAY_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date).replace(" ", "T");
+}
+
+export function parseDateTimeInGmt8(value: string): Date {
+  const normalized = value.trim().replace(" ", "T");
+  const withSeconds = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(normalized) ? `${normalized}:00` : normalized;
+  return new Date(`${withSeconds}+08:00`);
 }
 
 export function statusLabel(status: string): string {
@@ -58,13 +71,14 @@ export function formatTime(value?: string | null): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString("zh-CN", {
+    timeZone: DISPLAY_TIME_ZONE,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
-  });
+  }) + ` ${DISPLAY_TIME_ZONE_LABEL}`;
 }
 
 export function formatDuration(minutes?: number | null): string {

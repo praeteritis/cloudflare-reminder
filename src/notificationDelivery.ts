@@ -1,8 +1,8 @@
-import { MAX_PROVIDER_RESPONSE_BYTES } from "./constants";
+import { DEFAULT_TIMEZONE, MAX_PROVIDER_RESPONSE_BYTES } from "./constants";
 import { sendReminderEmail } from "./emailDelivery";
 import { findNotificationChannel } from "./notificationChannels";
 import { logAudit, sanitizeLogText } from "./observability";
-import { readLimitedText, safeJsonParse } from "./shared";
+import { formatInTimezone, readLimitedText, safeJsonParse } from "./shared";
 import type { EmailSendResult, Env, NotificationChannel, ReminderDeliveryType, Task } from "./types";
 
 export async function sendReminderNotification(
@@ -52,7 +52,7 @@ async function sendCustomNotification(
 }
 
 export async function sendNotificationChannelTest(channel: NotificationChannel): Promise<EmailSendResult> {
-  const sentAt = new Date().toISOString();
+  const sentAt = `${formatInTimezone(new Date(), DEFAULT_TIMEZONE)} GMT+08:00`;
   return deliverNotificationChannel(
     channel,
     "Cloudflare Reminder 测试通知",

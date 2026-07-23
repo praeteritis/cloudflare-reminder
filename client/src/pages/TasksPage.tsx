@@ -3,7 +3,7 @@ import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { Empty, NoticeBox } from "../components/common";
 import { TASK_BODY_MAX_CHARS, TASK_DEFAULT_MAX_NAG_COUNT, TASK_MAX_INTERVAL_MINUTES, TASK_MAX_NAG_COUNT, TASK_TITLE_MAX_CHARS } from "../constants";
 import { api, errorMessage } from "../lib/api";
-import { countCharacters, durationAmount, durationToMinutes, formatDuration, formatTime, maxDurationAmount, statusLabel, toDateTimeLocalValue } from "../lib/format";
+import { countCharacters, durationAmount, durationToMinutes, formatDuration, formatTime, maxDurationAmount, parseDateTimeInGmt8, statusLabel, toDateTimeLocalValue } from "../lib/format";
 import type { DueMode, Notice, NotificationChannel, SessionPayload, Task, TaskUsage } from "../types";
 
 export function TasksPage({ session }: { session: SessionPayload }) {
@@ -146,6 +146,9 @@ function TaskEditor({
   const [nagUnit, setNagUnit] = useState("hour");
   const editingNagDuration = durationAmount(editing?.nagIntervalMinutes || 60);
   const editingRelativeDuration = durationAmount(editing?.recurrenceIntervalMinutes || 60);
+  const editingRelativeStartAt = editing?.recurrenceType === "interval" && editing.recurrenceIntervalMinutes
+    ? new Date(new Date(editing.nextDueAtUtc).getTime() - editing.recurrenceIntervalMinutes * 60 * 1000).toISOString()
+    : null;
   const [nagAbsoluteUnit, setNagAbsoluteUnit] = useState(editingNagDuration.unit);
   const [relativeUnit, setRelativeUnit] = useState(editingRelativeDuration.unit);
 
@@ -181,6 +184,7 @@ function TaskEditor({
         : durationToMinutes(data.get("nagAbsoluteAmount"), data.get("nagAbsoluteUnit"));
     const recurrenceIntervalMinutes =
       dueMode === "relative" ? durationToMinutes(data.get("relativeAmount"), data.get("relativeUnit")) : null;
+    const relativeStartAt = String(data.get("relativeStartAt") || "").trim();
     const recurrenceEndAt = String(data.get("recurrenceEndAt") || "");
     const maxNagCount = Number(data.get("maxNagCount") || TASK_DEFAULT_MAX_NAG_COUNT);
     const notificationChannelIds = data.getAll("notificationChannelIds").map(String);
@@ -197,8 +201,16 @@ function TaskEditor({
       return;
     }
     if (dueMode === "relative") {
-      const firstDueAt = new Date(Date.now() + Number(recurrenceIntervalMinutes || 0) * 60 * 1000);
-      const endAt = recurrenceEndAt ? new Date(recurrenceEndAt) : null;
+      const startAt = relativeStartAt ? parseDateTimeInGmt8(relativeStartAt) : new Date();
+      const intervalMs = Number(recurrenceIntervalMinutes || 0) * 60 * 1000;
+      const elapsedMs = Date.now() - startAt.getTime();
+      const intervals = Math.max(1, Math.ceil(elapsedMs / intervalMs));
+      const firstDueAt = new Date(startAt.getTime() + intervals * intervalMs);
+      const endAt = recurrenceEndAt ? parseDateTimeInGmt8(recurrenceEndAt) : null;
+      if (Number.isNaN(startAt.getTime())) {
+        onError("请输入有效的开始时间");
+        return;
+      }
       if (endAt && (Number.isNaN(endAt.getTime()) || endAt <= firstDueAt)) {
         onError("结束时间必须晚于第一次提醒时间");
         return;
@@ -216,6 +228,7 @@ function TaskEditor({
     };
     if (dueMode === "relative") {
       payload.minutesFromNow = recurrenceIntervalMinutes;
+      if (relativeStartAt) payload.startAt = relativeStartAt;
       const recurrencePayload: {
         type: "interval";
         intervalMinutes: number | null;
@@ -285,8 +298,8 @@ function TaskEditor({
           <span className="field-hint">{countCharacters(bodyValue)}/{TASK_BODY_MAX_CHARS}</span>
         </label>
         <fieldset className="channel-picker">
-          <legend>通知渠道</legend>
-          <p className="field-help">每个渠道独立投递；某个渠道失败不会重复发送其他已成功渠道。</p>
+          <legend>通知渠道 *</legend>
+          <p className="field-help">请至少选择一个渠道。每个渠道独立投递；某个渠道失败不会重复发送其他已成功渠道。</p>
           <div className="channel-options">
             {channels.map((channel) => (
               <label className="channel-option" key={channel.id}>
@@ -294,7 +307,7 @@ function TaskEditor({
                   name="notificationChannelIds"
                   type="checkbox"
                   value={channel.id}
-                  defaultChecked={(editing?.notificationChannelIds || ["email"]).includes(channel.id)}
+                  defaultChecked={Boolean(editing?.notificationChannelIds.includes(channel.id))}
                 />
                 <span>
                   <strong>{channel.name}</strong>
@@ -314,8 +327,13 @@ function TaskEditor({
         </div>
         {dueMode === "relative" ? (
           <div className="inline-fields">
+            <label className="full-field">
+              开始时间（GMT+8，可选）
+              <input name="relativeStartAt" type="datetime-local" defaultValue={toDateTimeLocalValue(editingRelativeStartAt)} />
+              <span className="field-help">为空时默认当前时间；首次通知时间为开始时间加一个通知间隔。</span>
+            </label>
             <label>
-              每
+              通知间隔
               <input
                 name="relativeAmount"
                 type="number"
@@ -358,14 +376,14 @@ function TaskEditor({
               <span className="field-hint">0-{TASK_MAX_NAG_COUNT}</span>
             </label>
             <label>
-              停止时间
+              停止时间（GMT+8）
               <input name="recurrenceEndAt" type="datetime-local" defaultValue={toDateTimeLocalValue(editing?.recurrenceEndAtUtc)} />
             </label>
           </div>
         ) : (
           <div className="inline-fields">
             <label>
-              到期时间
+              到期时间（GMT+8）
               <input name="dueAt" type="datetime-local" defaultValue={toDateTimeLocalValue(editing?.nextDueAtUtc)} required />
             </label>
             <label>

@@ -75,7 +75,7 @@ describe("buildTaskFromAdminInput", () => {
     expect(task.recipient_email).toBe("user@example.com");
     expect(task.title).toBe("Custom reminder");
     expect(task.body).toBe("This is the body");
-    expect(task.timezone).toBe("America/New_York");
+    expect(task.timezone).toBe("Asia/Shanghai");
     expect(task.nag_interval_minutes).toBe(30);
     expect(task.max_nag_count).toBe(5);
     expect(task.recurrence_type).toBe("interval");
@@ -105,6 +105,30 @@ describe("buildTaskFromAdminInput", () => {
     const task = buildTaskFromAdminInput(input, { now });
     const expectedDueAt = new Date("2026-06-09T12:00:00Z");
     expect(task.first_due_at_utc).toBe(expectedDueAt.toISOString());
+  });
+
+  it("calculates the first reminder from a GMT+8 start time", () => {
+    const task = buildTaskFromAdminInput({
+      recipientEmail: "user@example.com",
+      title: "Test",
+      startAt: "2026-06-09T18:00",
+      minutesFromNow: 60,
+      notificationChannelIds: ["channel_123"],
+    }, { now });
+
+    expect(task.first_due_at_utc).toBe("2026-06-09T11:00:00.000Z");
+  });
+
+  it("keeps a past start time cadence and selects the next occurrence", () => {
+    const task = buildTaskFromAdminInput({
+      recipientEmail: "user@example.com",
+      title: "Test",
+      startAt: "2026-06-09T16:30",
+      minutesFromNow: 60,
+      notificationChannelIds: ["channel_123"],
+    }, { now });
+
+    expect(task.first_due_at_utc).toBe("2026-06-09T10:30:00.000Z");
   });
 
   it("throws when both dueAt and minutesFromNow provided", () => {
@@ -295,7 +319,7 @@ describe("buildTaskFromAdminInput", () => {
     expect(task.first_due_at_utc).toBe("2026-06-10T07:00:00.000Z");
   });
 
-  it("throws for dueAt without timezone when not using default timezone", () => {
+  it("always interprets timezone-less dueAt as GMT+8", () => {
     const input = {
       recipientEmail: "user@example.com",
       title: "Test",
@@ -303,9 +327,9 @@ describe("buildTaskFromAdminInput", () => {
       dueAt: "2026-06-10 15:00",
     };
 
-    expect(() => buildTaskFromAdminInput(input, { now })).toThrow(
-      /dueAt without an explicit timezone currently requires/
-    );
+    const task = buildTaskFromAdminInput(input, { now });
+    expect(task.timezone).toBe("Asia/Shanghai");
+    expect(task.first_due_at_utc).toBe("2026-06-10T07:00:00.000Z");
   });
 
   it("validates nag interval max value", () => {

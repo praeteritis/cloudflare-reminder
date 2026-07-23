@@ -6,3 +6,5 @@ export const TASK_DEFAULT_MAX_NAG_COUNT = 3;
 export const TASK_MAX_NAG_COUNT = 10;
 export const GITHUB_REPOSITORY_URL = "https://github.com/maya1900/cloudflare-reminder";
 export const MAX_CLIENT_ERROR_REPORTS = 8;
+export const DISPLAY_TIME_ZONE = "Asia/Shanghai";
+export const DISPLAY_TIME_ZONE_LABEL = "GMT+08:00";

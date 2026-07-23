@@ -5,7 +5,6 @@ import {
   TASK_BODY_MAX_CHARS,
   TASK_MAX_INTERVAL_MINUTES,
   TASK_MAX_NAG_COUNT,
-  TASK_TIMEZONE_MAX_CHARS,
   TASK_TITLE_MAX_CHARS,
 } from "./constants";
 import {
@@ -33,7 +32,7 @@ export function buildTaskFromAdminInput(
   const record = requireRecord(input, "Request body");
   const now = options.now ?? new Date();
   const nowIso = now.toISOString();
-  const timezone = readOptionalString(record, ["timezone"]) ?? options.timezone ?? DEFAULT_TIMEZONE;
+  const timezone = DEFAULT_TIMEZONE;
   const recipientEmail = readRequiredString(record, ["recipientEmail", "recipient_email"], "recipientEmail");
   const title = readRequiredString(record, ["title"], "title");
   const body = readOptionalString(record, ["body"]) ?? title;
@@ -67,7 +66,6 @@ export function buildTaskFromAdminInput(
   }
   assertMaxCharacters(title, TASK_TITLE_MAX_CHARS, "title");
   assertMaxCharacters(body, TASK_BODY_MAX_CHARS, "body");
-  assertMaxCharacters(timezone, TASK_TIMEZONE_MAX_CHARS, "timezone");
   assertMaxInteger(nagIntervalMinutes, TASK_MAX_INTERVAL_MINUTES, "nagIntervalMinutes");
   assertMaxInteger(maxNagCount, TASK_MAX_NAG_COUNT, "maxNagCount");
   if (recurrenceIntervalMinutes !== null) {
@@ -151,13 +149,18 @@ function resolveAdminDueAt(record: Record<string, unknown>, timezone: string, no
     "minutesFromNow"
   );
   const dueAtValue = readOptionalString(record, ["dueAt", "due_at", "dueAtUtc", "due_at_utc"]);
+  const startAtValue = readOptionalString(record, ["startAt", "start_at", "startAtUtc", "start_at_utc"]);
 
   if (minutesFromNow && dueAtValue) {
     throw new AdminInputError("Use only one of dueAt or minutesFromNow");
   }
+  if (startAtValue && !minutesFromNow) {
+    throw new AdminInputError("startAt requires minutesFromNow");
+  }
 
   if (minutesFromNow) {
-    return addMinutes(now, minutesFromNow);
+    const startAt = startAtValue ? parseAdminDueAt(startAtValue, timezone) : now;
+    return calculateNextIntervalAt(startAt, minutesFromNow, now);
   }
 
   if (!dueAtValue) {
@@ -185,13 +188,15 @@ function parseAdminDueAt(value: string, timezone: string): Date {
 }
 
 function appendDefaultTimezoneOffset(value: string, timezone: string): string {
-  if (timezone !== DEFAULT_TIMEZONE) {
-    throw new AdminInputError(
-      `dueAt without an explicit timezone currently requires "${DEFAULT_TIMEZONE}"; include an explicit offset such as 2026-06-07T20:00:00+08:00`
-    );
-  }
-
+  void timezone;
   return `${value}+08:00`;
+}
+
+function calculateNextIntervalAt(startAt: Date, intervalMinutes: number, now: Date): Date {
+  const intervalMs = intervalMinutes * 60 * 1000;
+  const elapsedMs = now.getTime() - startAt.getTime();
+  const intervals = Math.max(1, Math.ceil(elapsedMs / intervalMs));
+  return new Date(startAt.getTime() + intervals * intervalMs);
 }
 
 function resolveRecurrenceType(

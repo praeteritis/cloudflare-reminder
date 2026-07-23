@@ -126,7 +126,7 @@ npx wrangler queues create personal-mail-reminder-delivery-dlq
 
 在 Worker 的 Variables 中配置：
 
-- `TIMEZONE`：例如 `Asia/Shanghai`。
+- 所有时间统一使用 `GMT+08:00`（`Asia/Shanghai`）；数据库内部仍以 UTC 保存，避免调度和排序产生偏差。
 - `FROM_EMAIL`：例如 `邮件铃 <reminder@your-domain.com>`。
 - `REPLY_EMAIL`：例如 `reminder@your-domain.com`。
 - `EMAIL_DELIVERY`：生产环境可设为 `resend`，本地开发默认是 `log`。
@@ -216,7 +216,9 @@ npm run release:push
 - 收件邮箱：接收提醒邮件的地址。
 - 标题：邮件标题，也是任务名称。
 - 正文：提醒邮件正文。
-- 到期时间：可以选择“多久后”或指定具体时间。
+- 通知渠道：必须主动选择一个或多个渠道，新建任务不再默认勾选邮件。
+- 相对时间：可设置 GMT+8 开始时间和通知间隔；开始时间为空时使用当前时间，首次通知为开始时间加一个间隔。
+- 指定时间：按 GMT+8 填写具体到期时间。
 - 追提醒间隔：任务未完成时，多久再次发送提醒。
 - 重复提醒：可选。开启后会按固定间隔生成下一次提醒。
 

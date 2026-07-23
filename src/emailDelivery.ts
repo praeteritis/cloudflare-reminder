@@ -175,15 +175,15 @@ async function sendCompletionEmail(
   completedAt: Date,
   nextDueAt: Date | null
 ): Promise<EmailSendResult> {
-  const timezone = task.timezone || env.TIMEZONE || DEFAULT_TIMEZONE;
+  const timezone = DEFAULT_TIMEZONE;
   const subject = `[已完成] ${task.title}`;
   const nextReminderLine = nextDueAt
-    ? `下次提醒时间：${formatInTimezone(nextDueAt, timezone)}`
+    ? `下次提醒时间：${formatInTimezone(nextDueAt, timezone)} GMT+08:00`
     : "这是一次性任务，后续不会继续提醒。";
   const text = `本次提醒任务已完成。
 
 任务：${task.title}
-完成时间：${formatInTimezone(completedAt, timezone)}
+完成时间：${formatInTimezone(completedAt, timezone)} GMT+08:00
 ${nextReminderLine}`;
 
   return sendEmail(env, {
