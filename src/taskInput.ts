@@ -33,7 +33,6 @@ export function buildTaskFromAdminInput(
   const now = options.now ?? new Date();
   const nowIso = now.toISOString();
   const timezone = DEFAULT_TIMEZONE;
-  const recipientEmail = readRequiredString(record, ["recipientEmail", "recipient_email"], "recipientEmail");
   const title = readRequiredString(record, ["title"], "title");
   const body = readOptionalString(record, ["body"]) ?? title;
   const nagIntervalMinutes =
@@ -56,12 +55,15 @@ export function buildTaskFromAdminInput(
   const recurrenceEndAt = resolveRecurrenceEndAt(record, recurrence, timezone, recurrenceType);
   const id = options.id ?? readOptionalString(record, ["id"]) ?? makeId("task");
   const notificationChannelIds = resolveNotificationChannelIds(record);
+  const recipientEmail = notificationChannelIds.includes("email")
+    ? readRequiredString(record, ["recipientEmail", "recipient_email"], "recipientEmail")
+    : "";
 
   if (!isValidTaskId(id)) {
     throw new AdminInputError("id must contain only letters, numbers, underscores, and hyphens");
   }
 
-  if (!isValidEmail(recipientEmail)) {
+  if (notificationChannelIds.includes("email") && !isValidEmail(recipientEmail)) {
     throw new AdminInputError("recipientEmail must be a valid email address");
   }
   assertMaxCharacters(title, TASK_TITLE_MAX_CHARS, "title");

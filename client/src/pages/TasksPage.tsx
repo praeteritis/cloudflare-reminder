@@ -146,6 +146,7 @@ function TaskEditor({
   const [busy, setBusy] = useState(false);
   const [titleValue, setTitleValue] = useState(editing?.title || "");
   const [bodyValue, setBodyValue] = useState(editing?.body || "");
+  const [selectedChannelIds, setSelectedChannelIds] = useState<string[]>(editing?.notificationChannelIds || []);
   const [nagUnit, setNagUnit] = useState("hour");
   const editingNagDuration = durationAmount(editing?.nagIntervalMinutes || 60);
   const editingRelativeDuration = durationAmount(editing?.recurrenceIntervalMinutes || 60);
@@ -159,6 +160,7 @@ function TaskEditor({
     setDueMode(editing?.recurrenceType === "interval" || !editing ? "relative" : "absolute");
     setTitleValue(editing?.title || "");
     setBodyValue(editing?.body || "");
+    setSelectedChannelIds(editing?.notificationChannelIds || []);
     const nextNagDuration = durationAmount(editing?.nagIntervalMinutes || 60);
     const nextRelativeDuration = durationAmount(editing?.recurrenceIntervalMinutes || 60);
     setNagUnit(nextNagDuration.unit);
@@ -190,7 +192,7 @@ function TaskEditor({
     const relativeStartAt = String(data.get("relativeStartAt") || "").trim();
     const recurrenceEndAt = String(data.get("recurrenceEndAt") || "");
     const maxNagCount = Number(data.get("maxNagCount") || TASK_DEFAULT_MAX_NAG_COUNT);
-    const notificationChannelIds = data.getAll("notificationChannelIds").map(String);
+    const notificationChannelIds = selectedChannelIds;
     if (!notificationChannelIds.length) {
       onError("请至少选择一个通知渠道");
       return;
@@ -222,13 +224,15 @@ function TaskEditor({
 
     setBusy(true);
     const payload: Record<string, unknown> = {
-      recipientEmail: String(data.get("recipientEmail") || "").trim(),
       title,
       body,
       nagIntervalMinutes,
       maxNagCount,
       notificationChannelIds,
     };
+    if (notificationChannelIds.includes("email")) {
+      payload.recipientEmail = String(data.get("recipientEmail") || "").trim();
+    }
     if (dueMode === "relative") {
       payload.minutesFromNow = recurrenceIntervalMinutes;
       if (relativeStartAt) payload.startAt = relativeStartAt;
@@ -256,6 +260,7 @@ function TaskEditor({
         body: payload,
       });
       form.reset();
+      setSelectedChannelIds([]);
       await onDone(editing ? "提醒已保存" : "提醒已创建");
     } catch (error) {
       onError(errorMessage(error));
@@ -273,10 +278,6 @@ function TaskEditor({
         </div>
       </div>
       <form className="form-grid" key={editing?.id || "new"} onSubmit={(event) => { void submit(event); }}>
-        <label>
-          收件邮箱
-          <input name="recipientEmail" type="email" defaultValue={editing?.recipientEmail || ""} required />
-        </label>
         <label>
           标题
           <input
@@ -310,7 +311,12 @@ function TaskEditor({
                   name="notificationChannelIds"
                   type="checkbox"
                   value={channel.id}
-                  defaultChecked={Boolean(editing?.notificationChannelIds.includes(channel.id))}
+                  checked={selectedChannelIds.includes(channel.id)}
+                  onChange={(event) => {
+                    setSelectedChannelIds((current) => event.target.checked
+                      ? [...current, channel.id]
+                      : current.filter((id) => id !== channel.id));
+                  }}
                 />
                 <span>
                   <strong>{channel.name}</strong>
@@ -320,6 +326,12 @@ function TaskEditor({
             )) : <p className="field-help" role="alert">暂无可选通知渠道，请刷新页面或联系管理员。</p>}
           </div>
         </fieldset>
+        {selectedChannelIds.includes("email") && (
+          <label>
+            收件邮箱
+            <input name="recipientEmail" type="email" defaultValue={editing?.recipientEmail || ""} required />
+          </label>
+        )}
         <div className="segmented">
           <button type="button" aria-pressed={dueMode === "relative"} onClick={() => setDueMode("relative")}>
             相对时间
@@ -459,7 +471,7 @@ function TaskCard({
         <div className="meta">
           <span className={`pill status-${task.status}`}>{statusLabel(task.status)}</span>
           {isAdmin && task.userEmail && <span className="pill">{task.userEmail}</span>}
-          <span className="pill">{task.recipientEmail}</span>
+          {task.notificationChannelIds.includes("email") && task.recipientEmail && <span className="pill">{task.recipientEmail}</span>}
           <span className="pill">下次 {formatTime(task.nextDueAtUtc)}</span>
           <span className="pill">{recurrence}</span>
           {recurrenceEnd && <span className="pill">{recurrenceEnd}</span>}

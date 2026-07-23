@@ -30,6 +30,36 @@ describe("buildTaskFromAdminInput", () => {
       notificationChannelIds: [],
     })).toThrow("Select at least one valid notification channel");
   });
+
+  it("does not require a recipient email when email delivery is not selected", () => {
+    const task = buildTaskFromAdminInput({
+      title: "Webhook reminder",
+      minutesFromNow: 10,
+      notificationChannelIds: ["channel_123"],
+    });
+
+    expect(task.recipient_email).toBe("");
+    expect(JSON.parse(task.notification_channel_ids || "[]")).toEqual(["channel_123"]);
+  });
+
+  it("requires a recipient email when email delivery is selected", () => {
+    expect(() => buildTaskFromAdminInput({
+      title: "Email reminder",
+      minutesFromNow: 10,
+      notificationChannelIds: ["email"],
+    })).toThrow("recipientEmail is required");
+  });
+
+  it("ignores a recipient email when email delivery is not selected", () => {
+    const task = buildTaskFromAdminInput({
+      recipientEmail: "not-an-email",
+      title: "Webhook reminder",
+      minutesFromNow: 10,
+      notificationChannelIds: ["channel_123"],
+    });
+
+    expect(task.recipient_email).toBe("");
+  });
   const now = new Date("2026-06-09T10:00:00Z");
 
   it("builds task with required fields only", () => {
