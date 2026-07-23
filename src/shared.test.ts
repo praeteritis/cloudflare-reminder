@@ -104,7 +104,7 @@ describe("Date and time utilities", () => {
   it("formats date in timezone", () => {
     const date = new Date("2026-01-01T12:00:00Z");
     const formatted = formatInTimezone(date, "America/New_York");
-    expect(formatted).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
+    expect(formatted).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   });
 
   it("detects explicit timezone in date string", () => {

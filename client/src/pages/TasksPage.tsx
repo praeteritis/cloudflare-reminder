@@ -344,7 +344,7 @@ function TaskEditor({
           <div className="inline-fields">
             <label className="full-field">
               开始时间（GMT+8，可选）
-              <input name="relativeStartAt" type="datetime-local" defaultValue={toDateTimeLocalValue(editingRelativeStartAt)} />
+              <input name="relativeStartAt" type="datetime-local" step="1" defaultValue={toDateTimeLocalValue(editingRelativeStartAt)} />
               <span className="field-help">为空时默认当前时间；首次通知时间为开始时间加一个通知间隔。</span>
             </label>
             <label>
@@ -392,14 +392,14 @@ function TaskEditor({
             </label>
             <label>
               停止时间（GMT+8）
-              <input name="recurrenceEndAt" type="datetime-local" defaultValue={toDateTimeLocalValue(editing?.recurrenceEndAtUtc)} />
+              <input name="recurrenceEndAt" type="datetime-local" step="1" defaultValue={toDateTimeLocalValue(editing?.recurrenceEndAtUtc)} />
             </label>
           </div>
         ) : (
           <div className="inline-fields">
             <label>
               到期时间（GMT+8）
-              <input name="dueAt" type="datetime-local" defaultValue={toDateTimeLocalValue(editing?.nextDueAtUtc)} required />
+              <input name="dueAt" type="datetime-local" step="1" defaultValue={toDateTimeLocalValue(editing?.nextDueAtUtc)} required />
             </label>
             <label>
               追提醒

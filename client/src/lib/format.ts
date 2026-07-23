@@ -47,6 +47,7 @@ export function toDateTimeLocalValue(value?: string | null): string {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
     hour12: false,
   }).format(date).replace(" ", "T");
 }
@@ -77,6 +78,7 @@ export function formatTime(value?: string | null): string {
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
+    second: "2-digit",
     hour12: false,
   }) + ` ${DISPLAY_TIME_ZONE_LABEL}`;
 }

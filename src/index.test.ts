@@ -641,7 +641,7 @@ describe("queue delivery helpers", () => {
 describe("timezone formatting", () => {
   it("formats UTC timestamps as local Beijing/Shanghai time", () => {
     expect(formatInTimezone(new Date("2026-06-07T12:00:00.000Z"), "Asia/Shanghai")).toBe(
-      "2026-06-07 20:00"
+      "2026-06-07 20:00:00"
     );
   });
 });
