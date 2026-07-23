@@ -519,8 +519,10 @@ function TaskCard({
           <span className="pill">下次 {formatTime(task.nextDueAtUtc)}</span>
           <span className="pill">{recurrence}</span>
           {recurrenceEnd && <span className="pill">{recurrenceEnd}</span>}
-          <span className="pill">追 {formatDuration(task.nagIntervalMinutes)}</span>
-          <span className="pill">最多追 {task.maxNagCount} 次</span>
+          {task.taskType === "confirmation" && (<>
+            <span className="pill">追 {formatDuration(task.nagIntervalMinutes)}</span>
+            <span className="pill">最多追 {task.maxNagCount} 次</span>
+          </>)}
           {(task.notificationChannelIds || ["email"]).map((channelId) => (
             <span className="pill channel-pill" key={channelId}>
               {channels.find((channel) => channel.id === channelId)?.name || channelId}
