@@ -223,6 +223,13 @@ a:focus-visible {
   padding: 16px;
 }
 
+.config-field-help {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
 label {
   display: grid;
   gap: 7px;

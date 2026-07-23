@@ -1,4 +1,4 @@
-import { BellRing, Pencil, Plus, Save, Trash2 } from "lucide-react";
+import { BellRing, Pencil, Plus, Save, Send, Trash2 } from "lucide-react";
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { api, errorMessage } from "../lib/api";
 import type { Notice, NotificationChannel, NotificationChannelType } from "../types";
@@ -12,17 +12,39 @@ const TYPES: Array<{ value: Exclude<NotificationChannelType, "email">; label: st
   { value: "webhook", label: "自定义 Webhook" },
 ];
 
-const FIELDS: Record<string, Array<{ key: string; label: string; placeholder?: string; multiline?: boolean }>> = {
-  bark: [{ key: "endpoint", label: "Bark 完整推送地址", placeholder: "https://api.day.app/设备密钥" }],
-  gotify: [{ key: "endpoint", label: "Gotify 服务地址", placeholder: "https://gotify.example.com" }, { key: "token", label: "应用 Token" }],
-  pushdeer: [{ key: "pushKey", label: "Push Key" }, { key: "serverUrl", label: "服务地址（可选）", placeholder: "https://api2.pushdeer.com" }],
-  pushplus: [{ key: "token", label: "Token" }, { key: "topic", label: "群组编码（可选）" }],
-  telegram: [{ key: "botToken", label: "Bot Token" }, { key: "chatId", label: "Chat ID" }],
-  dingtalk: [{ key: "webhookUrl", label: "钉钉 Webhook URL" }],
-  wecom: [{ key: "webhookUrl", label: "企业微信 Webhook URL" }],
-  feishu: [{ key: "webhookUrl", label: "飞书 Webhook URL" }],
+type ChannelField = { key: string; label: string; placeholder?: string; multiline?: boolean; required?: boolean; secret?: boolean; help?: string };
+
+const FIELDS: Record<string, ChannelField[]> = {
+  bark: [
+    { key: "deviceKey", label: "设备 Key", required: true, secret: true, help: "Bark 推送地址最后一段，例如 https://api.day.app/abc 中的 abc。" },
+    { key: "serverUrl", label: "服务器地址（可选）", placeholder: "https://api.day.app" },
+    { key: "sound", label: "提示音（可选）" }, { key: "group", label: "分组（可选）", placeholder: "Mailbell" },
+  ],
+  gotify: [
+    { key: "serverUrl", label: "Gotify 服务地址", placeholder: "https://gotify.example.com", required: true },
+    { key: "token", label: "应用 Token", required: true, secret: true },
+    { key: "priority", label: "优先级（可选）", placeholder: "0" },
+  ],
+  pushdeer: [
+    { key: "pushKey", label: "Push Key", required: true, secret: true },
+    { key: "endpoint", label: "API 地址（可选）", placeholder: "https://api2.pushdeer.com/message/push", help: "仅自建 PushDeer 服务时填写完整推送接口地址。" },
+  ],
+  pushplus: [{ key: "token", label: "Token", required: true, secret: true }, { key: "topic", label: "群组编码（可选）" }],
+  telegram: [
+    { key: "botToken", label: "Bot Token", required: true, secret: true }, { key: "chatId", label: "用户或群组 ID", required: true },
+    { key: "apiHost", label: "API Host（可选）", placeholder: "https://api.telegram.org", help: "使用 Telegram API 反向代理时填写。" },
+  ],
+  dingtalk: [
+    { key: "accessToken", label: "Access Token", required: true, secret: true, help: "钉钉机器人 Webhook 中 access_token= 后面的值。" },
+    { key: "secret", label: "加签 Secret（可选）", secret: true, help: "机器人安全设置启用“加签”时填写 SEC 开头的密钥。" },
+  ],
+  wecom: [
+    { key: "key", label: "机器人 Key", required: true, secret: true, help: "企业微信 Webhook 中 key= 后面的值。" },
+    { key: "origin", label: "API 地址（可选）", placeholder: "https://qyapi.weixin.qq.com" },
+  ],
+  feishu: [{ key: "key", label: "机器人 Key", required: true, secret: true, help: "飞书 Webhook 地址最后一段的标识。" }],
   webhook: [
-    { key: "url", label: "请求 URL", placeholder: "可使用 $title 和 $content" },
+    { key: "url", label: "请求 URL", placeholder: "可使用 $title 和 $content", required: true },
     { key: "method", label: "请求方法", placeholder: "POST" },
     { key: "contentType", label: "Content-Type", placeholder: "application/json" },
     { key: "headers", label: "请求头（每行一个）", multiline: true },
@@ -36,6 +58,7 @@ export function NotificationChannelsPanel() {
   const [open, setOpen] = useState(false);
   const [type, setType] = useState<Exclude<NotificationChannelType, "email">>("bark");
   const [busy, setBusy] = useState(false);
+  const [testingId, setTestingId] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
 
   const load = useCallback(async () => {
@@ -78,6 +101,19 @@ export function NotificationChannelsPanel() {
     } catch (error) { setNotice({ type: "error", message: errorMessage(error) }); }
   }
 
+  async function testChannel(channel: NotificationChannel) {
+    setTestingId(channel.id);
+    setNotice(null);
+    try {
+      await api(`/admin/notification-channels/${encodeURIComponent(channel.id)}/test`, { method: "POST" });
+      setNotice({ type: "ok", message: `测试通知已通过“${channel.name}”发送` });
+    } catch (error) {
+      setNotice({ type: "error", message: `“${channel.name}”测试失败：${errorMessage(error)}` });
+    } finally {
+      setTestingId(null);
+    }
+  }
+
   return (
     <section className="panel channel-panel">
       <div className="panel-head">
@@ -95,6 +131,9 @@ export function NotificationChannelsPanel() {
                 <span>{channel.type}{channel.enabled ? " · 已启用" : " · 已停用"}{channel.builtIn ? " · 内置" : ""}</span>
               </div>
               {!channel.builtIn && <div className="channel-actions">
+                <button className="quiet icon-text" type="button" disabled={testingId !== null} onClick={() => { void testChannel(channel); }}>
+                  <Send size={15} />{testingId === channel.id ? "发送中..." : "测试"}
+                </button>
                 <button className="quiet icon-text" type="button" onClick={() => showEditor(channel)}><Pencil size={15} />编辑</button>
                 <button className="danger icon-text" type="button" onClick={() => { void remove(channel); }}><Trash2 size={15} />删除</button>
               </div>}
@@ -108,10 +147,12 @@ export function NotificationChannelsPanel() {
           <label>渠道类型<select value={type} onChange={(event) => setType(event.target.value as Exclude<NotificationChannelType, "email">)}>
             {TYPES.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}
           </select></label>
-          {(FIELDS[type] || []).map((field) => <label key={`${type}-${field.key}`}>{field.label}
+          {(FIELDS[type] || []).map((field) => <label key={`${type}-${field.key}`}>
+            <span>{field.label}{field.required ? " *" : ""}</span>
             {field.multiline
-              ? <textarea name={field.key} rows={4} placeholder={field.placeholder} defaultValue={editing?.type === type ? editing.config?.[field.key] || "" : ""} />
-              : <input name={field.key} placeholder={field.placeholder} defaultValue={editing?.type === type ? editing.config?.[field.key] || "" : ""} />}
+              ? <textarea name={field.key} rows={4} required={field.required} placeholder={field.placeholder} defaultValue={editing?.type === type ? editing.config?.[field.key] || "" : ""} />
+              : <input name={field.key} type={field.secret ? "password" : "text"} autoComplete="off" required={field.required} placeholder={field.placeholder} defaultValue={editing?.type === type ? editing.config?.[field.key] || "" : ""} />}
+            {field.help && <small className="config-field-help">{field.help}</small>}
           </label>)}
           <label className="remember"><input name="enabled" type="checkbox" defaultChecked={editing?.enabled ?? true} />启用该渠道</label>
           <p className="field-help">渠道凭据保存在 D1，仅管理员接口可读取。自定义 Webhook 支持 $title、$content 占位符。</p>

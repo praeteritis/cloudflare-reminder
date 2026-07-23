@@ -90,6 +90,11 @@ export function matchNotificationChannelPath(pathname: string): string | null {
   return match ? decodeURIComponent(match[1]) : null;
 }
 
+export function matchNotificationChannelTestPath(pathname: string): string | null {
+  const match = pathname.match(/^\/admin\/notification-channels\/([^/]+)\/test$/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 function parseChannelInput(input: unknown): { name: string; type: NotificationChannelType; config: Record<string, string>; enabled: boolean } {
   const record = requireRecord(input, "Request body");
   const name = readRequiredString(record, ["name"], "name");
@@ -108,14 +113,14 @@ function parseChannelInput(input: unknown): { name: string; type: NotificationCh
 
 function validateChannelConfig(type: NotificationChannelType, config: Record<string, string>): void {
   const required: Partial<Record<NotificationChannelType, string[]>> = {
-    bark: ["endpoint"], gotify: ["endpoint", "token"], pushdeer: ["pushKey"], pushplus: ["token"],
-    telegram: ["botToken", "chatId"], dingtalk: ["webhookUrl"], wecom: ["webhookUrl"],
-    feishu: ["webhookUrl"], webhook: ["url"],
+    bark: ["deviceKey"], gotify: ["serverUrl", "token"], pushdeer: ["pushKey"], pushplus: ["token"],
+    telegram: ["botToken", "chatId"], dingtalk: ["accessToken"], wecom: ["key"],
+    feishu: ["key"], webhook: ["url"],
   };
   for (const key of required[type] || []) {
     if (!config[key]) throw new AdminInputError(`config.${key} is required for ${type}`);
   }
-  for (const key of ["endpoint", "webhookUrl", "url", "serverUrl"]) {
+  for (const key of ["endpoint", "url", "serverUrl", "apiHost", "origin"]) {
     if (config[key]) assertHttpUrl(config[key], `config.${key}`);
   }
   if (config.method && !["GET", "POST", "PUT", "PATCH"].includes(config.method.toUpperCase())) {
@@ -135,10 +140,38 @@ function assertHttpUrl(value: string, name: string): void {
 function serializeChannel(row: NotificationChannel, includeConfig: boolean) {
   let config: Record<string, string> = {};
   try { config = JSON.parse(row.config_json) as Record<string, string>; } catch { /* return empty config */ }
+  config = normalizeLegacyConfig(row.type, config);
   return {
     id: row.id, name: row.name, type: row.type, enabled: Boolean(row.enabled), builtIn: false,
     ...(includeConfig ? { config } : {}), createdAtUtc: row.created_at_utc, updatedAtUtc: row.updated_at_utc,
   };
+}
+
+function normalizeLegacyConfig(type: NotificationChannelType, config: Record<string, string>): Record<string, string> {
+  const next = { ...config };
+  try {
+    if (type === "dingtalk" && !next.accessToken && next.webhookUrl) {
+      next.accessToken = new URL(next.webhookUrl).searchParams.get("access_token") || "";
+    }
+    if (type === "wecom" && !next.key && next.webhookUrl) {
+      const url = new URL(next.webhookUrl);
+      next.key = url.searchParams.get("key") || "";
+      next.origin = url.origin;
+    }
+    if (type === "feishu" && !next.key && next.webhookUrl) {
+      next.key = new URL(next.webhookUrl).pathname.split("/").filter(Boolean).at(-1) || "";
+    }
+    if (type === "bark" && !next.deviceKey && next.endpoint) {
+      const url = new URL(next.endpoint);
+      const path = url.pathname.split("/").filter(Boolean);
+      next.deviceKey = path.pop() || "";
+      next.serverUrl = `${url.origin}/${path.join("/")}`.replace(/\/$/, "");
+    }
+    if (type === "gotify" && !next.serverUrl && next.endpoint) next.serverUrl = next.endpoint;
+  } catch {
+    // Keep legacy fields intact if an old URL cannot be parsed.
+  }
+  return next;
 }
 
 async function removeChannelFromTasks(env: Env, id: string, now: string): Promise<void> {

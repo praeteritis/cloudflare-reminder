@@ -3,6 +3,7 @@ import {
   USER_SESSION_COOKIE,
 } from "./constants";
 import {
+  AdminInputError,
   clearSessionCookie,
   jsonError,
   readJsonBody,
@@ -35,10 +36,13 @@ import {
 import {
   createNotificationChannel,
   deleteNotificationChannel,
+  findNotificationChannel,
   listNotificationChannels,
   matchNotificationChannelPath,
+  matchNotificationChannelTestPath,
   updateNotificationChannel,
 } from "./notificationChannels";
+import { sendNotificationChannelTest } from "./notificationDelivery";
 import {
   getUserTaskUsage,
   insertTask,
@@ -290,6 +294,22 @@ export default {
             name: channel.name, type: channel.type,
           });
           return Response.json({ ok: true, channel }, { status: 201 });
+        }
+
+        const notificationChannelTestId = matchNotificationChannelTestPath(url.pathname);
+        if (notificationChannelTestId && request.method === "POST") {
+          const channel = await findNotificationChannel(env, notificationChannelTestId);
+          if (!channel) throw new AdminInputError("Notification channel not found", 404);
+          const result = await sendNotificationChannelTest(channel);
+          await logAudit(env, actor, result.success ? "notification_channel_test_success" : "notification_channel_test_failed", "notification_channel", channel.id, {
+            name: channel.name,
+            type: channel.type,
+            error: result.errorMessage ? errorMessageForLog(result.errorMessage) : null,
+          });
+          if (!result.success) {
+            return Response.json({ ok: false, error: result.errorMessage || "Test notification failed" }, { status: 502 });
+          }
+          return Response.json({ ok: true, provider: result.provider, providerMessageId: result.providerMessageId });
         }
 
         const notificationChannelId = matchNotificationChannelPath(url.pathname);

@@ -32,29 +32,10 @@ async function sendCustomNotification(
   deliveryKey: string,
   channel: NotificationChannel
 ): Promise<EmailSendResult> {
-  const provider = channel.type;
-  const config = parseConfig(channel.config_json);
   const title = task.title;
   const content = `${task.body}\n\n任务编号：${runId}${type === "nag" ? "\n这是一次追提醒。" : ""}`;
-  let success = false;
-  let errorMessage: string | null = null;
-  let providerMessageId: string | null = null;
-  try {
-    const request = buildChannelRequest(provider, config, title, content);
-    const response = await fetch(request.url, {
-      method: request.method,
-      headers: request.headers,
-      body: request.body,
-      signal: AbortSignal.timeout(15_000),
-    });
-    const responseText = await readLimitedText(response, MAX_PROVIDER_RESPONSE_BYTES, "Notification provider response is too large");
-    if (!response.ok) throw new Error(`${provider} rejected request with status ${response.status}`);
-    const payload = safeJsonParse(responseText) as Record<string, unknown> | null;
-    providerMessageId = String(payload?.id ?? payload?.message_id ?? payload?.request_id ?? "") || null;
-    success = true;
-  } catch (error) {
-    errorMessage = error instanceof Error ? error.message : String(error);
-  }
+  const result = await deliverNotificationChannel(channel, title, content);
+  const { success, provider, providerMessageId, errorMessage } = result;
 
   const now = new Date().toISOString();
   await env.DB.prepare(
@@ -67,38 +48,102 @@ async function sendCustomNotification(
     runId, type, channelId: channel.id, channelType: channel.type,
     error: errorMessage ? sanitizeLogText(errorMessage, 240) : null,
   });
-  return { success, provider, providerMessageId, errorMessage };
+  return result;
 }
 
-function buildChannelRequest(
+export async function sendNotificationChannelTest(channel: NotificationChannel): Promise<EmailSendResult> {
+  const sentAt = new Date().toISOString();
+  return deliverNotificationChannel(
+    channel,
+    "Cloudflare Reminder 测试通知",
+    `如果你收到这条消息，说明“${channel.name}”渠道配置正确。\n\n发送时间：${sentAt}`
+  );
+}
+
+async function deliverNotificationChannel(
+  channel: NotificationChannel,
+  title: string,
+  content: string
+): Promise<EmailSendResult> {
+  const provider = channel.type;
+  let providerMessageId: string | null = null;
+  try {
+    const request = await buildChannelRequest(provider, parseConfig(channel.config_json), title, content);
+    const response = await fetch(request.url, {
+      method: request.method,
+      headers: request.headers,
+      body: request.body,
+      signal: AbortSignal.timeout(15_000),
+    });
+    const responseText = await readLimitedText(response, MAX_PROVIDER_RESPONSE_BYTES, "Notification provider response is too large");
+    if (!response.ok) throw new Error(`${provider} rejected request with status ${response.status}`);
+    const payload = safeJsonParse(responseText) as Record<string, unknown> | null;
+    validateProviderResponse(provider, payload);
+    providerMessageId = String(payload?.id ?? payload?.message_id ?? payload?.request_id ?? "") || null;
+    return { success: true, provider, providerMessageId, errorMessage: null };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    return { success: false, provider, providerMessageId, errorMessage };
+  }
+}
+
+export async function buildChannelRequest(
   type: string,
   config: Record<string, string>,
   title: string,
   content: string
-): { url: string; method: string; headers: Record<string, string>; body?: string } {
+): Promise<{ url: string; method: string; headers: Record<string, string>; body?: string }> {
   const json = (url: string, body: unknown, headers: Record<string, string> = {}) => ({
     url, method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body),
   });
   switch (type) {
-    case "bark":
-      return json(config.endpoint, { title, body: content, group: "Mailbell" });
-    case "gotify": {
-      const url = new URL(config.endpoint.replace(/\/$/, "") + "/message");
-      url.searchParams.set("token", config.token);
-      return json(url.toString(), { title, message: content, priority: 5 });
+    case "bark": {
+      const base = config.deviceKey
+        ? `${(config.serverUrl || "https://api.day.app").replace(/\/$/, "")}/${config.deviceKey}`
+        : config.endpoint;
+      const url = new URL(`${base.replace(/\/$/, "")}/${encodeURIComponent(title)}/${encodeURIComponent(content)}`);
+      for (const [key, value] of Object.entries({
+        sound: config.sound, group: config.group || "Mailbell", icon: config.iconUrl,
+        level: config.level, url: config.openUrl,
+      })) if (value) url.searchParams.set(key, value);
+      return { url: url.toString(), method: "GET", headers: {} };
     }
-    case "pushdeer":
-      return json(`${(config.serverUrl || "https://api2.pushdeer.com").replace(/\/$/, "")}/message/push`, { pushkey: config.pushKey, text: title, desp: content, type: "text" });
+    case "gotify": {
+      const url = new URL((config.serverUrl || config.endpoint).replace(/\/$/, "") + "/message");
+      url.searchParams.set("token", config.token);
+      return json(url.toString(), { title, message: content, priority: Number(config.priority || 0) });
+    }
+    case "pushdeer": {
+      const endpoint = config.endpoint
+        || (config.serverUrl ? `${config.serverUrl.replace(/\/$/, "")}/message/push` : "https://api2.pushdeer.com/message/push");
+      return json(endpoint, { pushkey: config.pushKey, text: title, desp: content, type: "markdown" });
+    }
     case "pushplus":
       return json("https://www.pushplus.plus/send", { token: config.token, title, content, topic: config.topic || undefined });
     case "telegram":
-      return json(`https://api.telegram.org/bot${config.botToken}/sendMessage`, { chat_id: config.chatId, text: `${title}\n\n${content}` });
-    case "dingtalk":
-      return json(config.webhookUrl, { msgtype: "text", text: { content: `${title}\n\n${content}` } });
-    case "wecom":
-      return json(config.webhookUrl, { msgtype: "text", text: { content: `${title}\n\n${content}` } });
-    case "feishu":
-      return json(config.webhookUrl, { msg_type: "text", content: { text: `${title}\n\n${content}` } });
+      return json(`${(config.apiHost || "https://api.telegram.org").replace(/\/$/, "")}/bot${config.botToken}/sendMessage`, {
+        chat_id: config.chatId, text: `${title}\n\n${content}`, disable_web_page_preview: true,
+      });
+    case "dingtalk": {
+      const accessToken = config.accessToken || readQueryParam(config.webhookUrl, "access_token");
+      const url = new URL("https://oapi.dingtalk.com/robot/send");
+      url.searchParams.set("access_token", accessToken);
+      if (config.secret) {
+        const timestamp = Date.now().toString();
+        url.searchParams.set("timestamp", timestamp);
+        url.searchParams.set("sign", await makeDingTalkSignature(timestamp, config.secret));
+      }
+      return json(url.toString(), { msgtype: "text", text: { content: `${title}\n\n${content}` } });
+    }
+    case "wecom": {
+      const key = config.key || readQueryParam(config.webhookUrl, "key");
+      const origin = (config.origin || "https://qyapi.weixin.qq.com").replace(/\/$/, "");
+      return json(`${origin}/cgi-bin/webhook/send?key=${encodeURIComponent(key)}`, { msgtype: "text", text: { content: `${title}\n\n${content}` } });
+    }
+    case "feishu": {
+      const key = config.key || config.webhookUrl?.split("/").filter(Boolean).at(-1) || "";
+      return json(`https://open.feishu.cn/open-apis/bot/v2/hook/${encodeURIComponent(key)}`, { msg_type: "text", content: { text: `${title}\n\n${content}` } });
+    }
     case "webhook": {
       const method = (config.method || "POST").toUpperCase();
       const replace = (value: string) => value.replaceAll("$title", title).replaceAll("$content", content);
@@ -111,6 +156,42 @@ function buildChannelRequest(
     default:
       throw new Error(`Unsupported notification channel: ${type}`);
   }
+}
+
+export function validateProviderResponse(type: string, payload: Record<string, unknown> | null): void {
+  if (type === "webhook") return;
+  if (!payload) throw new Error(`${type}: provider returned an invalid response`);
+  const ok = type === "bark" ? Number(payload.code) === 200
+    : type === "gotify" ? Boolean(payload.id)
+    : type === "pushdeer" ? hasPushDeerResult(payload)
+    : type === "pushplus" ? Number(payload.code) === 200
+    : type === "telegram" ? payload.ok === true
+    : type === "dingtalk" || type === "wecom" ? Number(payload.errcode) === 0
+    : type === "feishu" ? Number(payload.StatusCode ?? payload.code) === 0
+    : true;
+  if (!ok) {
+    const message = String(payload.message ?? payload.msg ?? payload.errmsg ?? payload.error ?? "provider returned an error");
+    throw new Error(`${type}: ${sanitizeLogText(message, 200)}`);
+  }
+}
+
+function hasPushDeerResult(payload: Record<string, unknown>): boolean {
+  const content = payload.content as { result?: unknown[] | string } | undefined;
+  return Boolean(content?.result && content.result.length > 0);
+}
+
+function readQueryParam(value: string | undefined, name: string): string {
+  if (!value) return "";
+  try { return new URL(value).searchParams.get(name) || ""; } catch { return ""; }
+}
+
+async function makeDingTalkSignature(timestamp: string, secret: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", encoder.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(`${timestamp}\n${secret}`)));
+  let binary = "";
+  for (const byte of signature) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
 function parseConfig(value: string): Record<string, string> {
