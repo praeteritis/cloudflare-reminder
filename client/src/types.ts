@@ -1,6 +1,7 @@
 export type TaskStatus = "active" | "done" | "paused" | "cancelled";
 export type NoticeType = "ok" | "error";
 export type DueMode = "relative" | "absolute";
+export type TaskType = "scheduled" | "confirmation";
 
 export interface AppSettings {
   allowRegistration?: boolean;
@@ -31,6 +32,7 @@ export interface Task {
   title: string;
   body: string;
   status: TaskStatus;
+  taskType: TaskType;
   nextDueAtUtc: string;
   recurrenceType: "none" | "interval";
   recurrenceIntervalMinutes: number | null;

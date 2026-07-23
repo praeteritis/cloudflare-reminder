@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { matchNotificationChannelTestPath } from "./notificationChannels";
+import { buildReminderEmailContent } from "./emailDelivery";
 import {
   buildChannelRequest,
   buildReminderNotificationContent,
@@ -13,6 +14,22 @@ afterEach(() => {
 });
 
 describe("notification channel requests", () => {
+  it("only asks for an email reply on confirmation tasks", () => {
+    expect(buildReminderEmailContent({
+      task_type: "scheduled",
+      title: "喝水",
+      body: "现在喝水",
+    }, "run_123")).toEqual({ subject: "喝水", text: "现在喝水" });
+
+    const confirmation = buildReminderEmailContent({
+      task_type: "confirmation",
+      title: "吃药",
+      body: "请确认完成",
+    }, "run_123");
+    expect(confirmation.subject).toContain("[R:run_123]");
+    expect(confirmation.text).toContain("回复第一行只写");
+  });
+
   it("does not expose a task or run number in reminder content", () => {
     expect(buildReminderNotificationContent("该喝水了", "reminder")).toBe("该喝水了");
     expect(buildReminderNotificationContent("该喝水了", "nag")).toBe("该喝水了\n\n这是一次追提醒。");

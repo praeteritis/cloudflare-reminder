@@ -4,7 +4,7 @@ import { Empty, NoticeBox } from "../components/common";
 import { TASK_BODY_MAX_CHARS, TASK_DEFAULT_MAX_NAG_COUNT, TASK_MAX_INTERVAL_MINUTES, TASK_MAX_NAG_COUNT, TASK_TITLE_MAX_CHARS } from "../constants";
 import { api, errorMessage } from "../lib/api";
 import { countCharacters, durationAmount, durationToMinutes, formatDuration, formatTime, maxDurationAmount, parseDateTimeInGmt8, statusLabel, toDateTimeLocalValue } from "../lib/format";
-import type { DueMode, Notice, NotificationChannel, SessionPayload, Task, TaskUsage } from "../types";
+import type { DueMode, Notice, NotificationChannel, SessionPayload, Task, TaskType, TaskUsage } from "../types";
 
 export function TasksPage({ session }: { session: SessionPayload }) {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -143,6 +143,7 @@ function TaskEditor({
   onError: (message: string) => void;
 }) {
   const [dueMode, setDueMode] = useState<DueMode>("relative");
+  const [taskType, setTaskType] = useState<TaskType>(editing?.taskType || "scheduled");
   const [busy, setBusy] = useState(false);
   const [titleValue, setTitleValue] = useState(editing?.title || "");
   const [bodyValue, setBodyValue] = useState(editing?.body || "");
@@ -158,6 +159,7 @@ function TaskEditor({
 
   useEffect(() => {
     setDueMode(editing?.recurrenceType === "interval" || !editing ? "relative" : "absolute");
+    setTaskType(editing?.taskType || "scheduled");
     setTitleValue(editing?.title || "");
     setBodyValue(editing?.body || "");
     setSelectedChannelIds(editing?.notificationChannelIds || []);
@@ -183,18 +185,25 @@ function TaskEditor({
       return;
     }
 
-    const nagIntervalMinutes =
-      dueMode === "relative"
-        ? durationToMinutes(data.get("nagAmount"), data.get("nagUnit"))
-        : durationToMinutes(data.get("nagAbsoluteAmount"), data.get("nagAbsoluteUnit"));
     const recurrenceIntervalMinutes =
       dueMode === "relative" ? durationToMinutes(data.get("relativeAmount"), data.get("relativeUnit")) : null;
+    const nagIntervalMinutes = taskType === "confirmation"
+      ? dueMode === "relative"
+        ? durationToMinutes(data.get("nagAmount"), data.get("nagUnit"))
+        : durationToMinutes(data.get("nagAbsoluteAmount"), data.get("nagAbsoluteUnit"))
+      : recurrenceIntervalMinutes ?? 1;
     const relativeStartAt = String(data.get("relativeStartAt") || "").trim();
     const recurrenceEndAt = String(data.get("recurrenceEndAt") || "");
-    const maxNagCount = Number(data.get("maxNagCount") || TASK_DEFAULT_MAX_NAG_COUNT);
+    const maxNagCount = taskType === "confirmation"
+      ? Number(data.get("maxNagCount") || TASK_DEFAULT_MAX_NAG_COUNT)
+      : 0;
     const notificationChannelIds = selectedChannelIds;
     if (!notificationChannelIds.length) {
       onError("请至少选择一个通知渠道");
+      return;
+    }
+    if (taskType === "confirmation" && !notificationChannelIds.includes("email")) {
+      onError("需要确认完成的任务必须选择邮件渠道");
       return;
     }
     if (nagIntervalMinutes > TASK_MAX_INTERVAL_MINUTES || (recurrenceIntervalMinutes ?? 0) > TASK_MAX_INTERVAL_MINUTES) {
@@ -229,6 +238,7 @@ function TaskEditor({
       nagIntervalMinutes,
       maxNagCount,
       notificationChannelIds,
+      taskType,
     };
     if (notificationChannelIds.includes("email")) {
       payload.recipientEmail = String(data.get("recipientEmail") || "").trim();
@@ -278,6 +288,34 @@ function TaskEditor({
         </div>
       </div>
       <form className="form-grid" key={editing?.id || "new"} onSubmit={(event) => { void submit(event); }}>
+        <fieldset className="channel-picker">
+          <legend>任务类型 *</legend>
+          <div className="channel-options">
+            <label className="channel-option">
+              <input
+                name="taskType"
+                type="radio"
+                value="scheduled"
+                checked={taskType === "scheduled"}
+                onChange={() => setTaskType("scheduled")}
+              />
+              <span><strong>普通定时通知</strong><small>按通知间隔持续发送，不需要确认完成</small></span>
+            </label>
+            <label className="channel-option">
+              <input
+                name="taskType"
+                type="radio"
+                value="confirmation"
+                checked={taskType === "confirmation"}
+                onChange={() => {
+                  setTaskType("confirmation");
+                  setSelectedChannelIds((current) => current.includes("email") ? current : [...current, "email"]);
+                }}
+              />
+              <span><strong>需要确认完成</strong><small>邮件回复 1 完成；未完成时发送追提醒</small></span>
+            </label>
+          </div>
+        </fieldset>
         <label>
           标题
           <input
@@ -312,6 +350,7 @@ function TaskEditor({
                   type="checkbox"
                   value={channel.id}
                   checked={selectedChannelIds.includes(channel.id)}
+                  disabled={taskType === "confirmation" && channel.id === "email"}
                   onChange={(event) => {
                     setSelectedChannelIds((current) => event.target.checked
                       ? [...current, channel.id]
@@ -366,30 +405,32 @@ function TaskEditor({
                 <option value="day">天</option>
               </select>
             </label>
-            <label>
-              追提醒
-              <input name="nagAmount" type="number" min="1" max={maxDurationAmount(nagUnit)} defaultValue={editingNagDuration.amount} required />
-            </label>
-            <label>
-              单位
-              <select name="nagUnit" value={nagUnit} onChange={(event) => setNagUnit(event.target.value)}>
-                <option value="minute">分钟</option>
-                <option value="hour">小时</option>
-                <option value="day">天</option>
-              </select>
-            </label>
-            <label>
-              最多追
-              <input
-                name="maxNagCount"
-                type="number"
-                min="0"
-                max={TASK_MAX_NAG_COUNT}
-                defaultValue={editing?.maxNagCount ?? TASK_DEFAULT_MAX_NAG_COUNT}
-                required
-              />
-              <span className="field-hint">0-{TASK_MAX_NAG_COUNT}</span>
-            </label>
+            {taskType === "confirmation" && (<>
+              <label>
+                追提醒
+                <input name="nagAmount" type="number" min="1" max={maxDurationAmount(nagUnit)} defaultValue={editingNagDuration.amount} required />
+              </label>
+              <label>
+                单位
+                <select name="nagUnit" value={nagUnit} onChange={(event) => setNagUnit(event.target.value)}>
+                  <option value="minute">分钟</option>
+                  <option value="hour">小时</option>
+                  <option value="day">天</option>
+                </select>
+              </label>
+              <label>
+                最多追
+                <input
+                  name="maxNagCount"
+                  type="number"
+                  min="0"
+                  max={TASK_MAX_NAG_COUNT}
+                  defaultValue={editing?.maxNagCount ?? TASK_DEFAULT_MAX_NAG_COUNT}
+                  required
+                />
+                <span className="field-hint">0-{TASK_MAX_NAG_COUNT}</span>
+              </label>
+            </>)}
             <label>
               停止时间（GMT+8）
               <input name="recurrenceEndAt" type="datetime-local" step="1" defaultValue={toDateTimeLocalValue(editing?.recurrenceEndAtUtc)} />
@@ -401,37 +442,39 @@ function TaskEditor({
               到期时间（GMT+8）
               <input name="dueAt" type="datetime-local" step="1" defaultValue={toDateTimeLocalValue(editing?.nextDueAtUtc)} required />
             </label>
-            <label>
-              追提醒
-              <input
-                name="nagAbsoluteAmount"
-                type="number"
-                min="1"
-                max={maxDurationAmount(nagAbsoluteUnit)}
-                defaultValue={editingNagDuration.amount}
-                required
-              />
-            </label>
-            <label>
-              单位
-              <select name="nagAbsoluteUnit" value={nagAbsoluteUnit} onChange={(event) => setNagAbsoluteUnit(event.target.value)}>
-                <option value="minute">分钟</option>
-                <option value="hour">小时</option>
-                <option value="day">天</option>
-              </select>
-            </label>
-            <label>
-              最多追
-              <input
-                name="maxNagCount"
-                type="number"
-                min="0"
-                max={TASK_MAX_NAG_COUNT}
-                defaultValue={editing?.maxNagCount ?? TASK_DEFAULT_MAX_NAG_COUNT}
-                required
-              />
-              <span className="field-hint">0-{TASK_MAX_NAG_COUNT}</span>
-            </label>
+            {taskType === "confirmation" && (<>
+              <label>
+                追提醒
+                <input
+                  name="nagAbsoluteAmount"
+                  type="number"
+                  min="1"
+                  max={maxDurationAmount(nagAbsoluteUnit)}
+                  defaultValue={editingNagDuration.amount}
+                  required
+                />
+              </label>
+              <label>
+                单位
+                <select name="nagAbsoluteUnit" value={nagAbsoluteUnit} onChange={(event) => setNagAbsoluteUnit(event.target.value)}>
+                  <option value="minute">分钟</option>
+                  <option value="hour">小时</option>
+                  <option value="day">天</option>
+                </select>
+              </label>
+              <label>
+                最多追
+                <input
+                  name="maxNagCount"
+                  type="number"
+                  min="0"
+                  max={TASK_MAX_NAG_COUNT}
+                  defaultValue={editing?.maxNagCount ?? TASK_DEFAULT_MAX_NAG_COUNT}
+                  required
+                />
+                <span className="field-hint">0-{TASK_MAX_NAG_COUNT}</span>
+              </label>
+            </>)}
           </div>
         )}
         <div className="form-actions">
@@ -470,6 +513,7 @@ function TaskCard({
         <p className="task-body">{task.body}</p>
         <div className="meta">
           <span className={`pill status-${task.status}`}>{statusLabel(task.status)}</span>
+          <span className="pill">{task.taskType === "confirmation" ? "需确认完成" : "普通定时通知"}</span>
           {isAdmin && task.userEmail && <span className="pill">{task.userEmail}</span>}
           {task.notificationChannelIds.includes("email") && task.recipientEmail && <span className="pill">{task.recipientEmail}</span>}
           <span className="pill">下次 {formatTime(task.nextDueAtUtc)}</span>

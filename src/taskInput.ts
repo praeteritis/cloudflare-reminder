@@ -23,7 +23,7 @@ import {
   readRequiredString,
   requireRecord,
 } from "./shared";
-import type { RecurrenceAnchor, RecurrenceType, Task, TaskUpdateInput } from "./types";
+import type { RecurrenceAnchor, RecurrenceType, Task, TaskType, TaskUpdateInput } from "./types";
 
 export function buildTaskFromAdminInput(
   input: unknown,
@@ -55,6 +55,10 @@ export function buildTaskFromAdminInput(
   const recurrenceEndAt = resolveRecurrenceEndAt(record, recurrence, timezone, recurrenceType);
   const id = options.id ?? readOptionalString(record, ["id"]) ?? makeId("task");
   const notificationChannelIds = resolveNotificationChannelIds(record);
+  const taskType = resolveTaskType(record, notificationChannelIds);
+  if (taskType === "confirmation" && !notificationChannelIds.includes("email")) {
+    throw new AdminInputError("Confirmation tasks must include the email notification channel");
+  }
   const recipientEmail = notificationChannelIds.includes("email")
     ? readRequiredString(record, ["recipientEmail", "recipient_email"], "recipientEmail")
     : "";
@@ -84,6 +88,7 @@ export function buildTaskFromAdminInput(
     title,
     body,
     status: "active",
+    task_type: taskType,
     timezone,
     first_due_at_utc: dueAt.toISOString(),
     next_due_at_utc: dueAt.toISOString(),
@@ -124,9 +129,19 @@ export function buildTaskUpdateFromAdminInput(
     recurrence_end_at_utc: parsed.recurrence_end_at_utc,
     nag_interval_minutes: parsed.nag_interval_minutes,
     max_nag_count: parsed.max_nag_count,
+    task_type: parsed.task_type ?? "confirmation",
     updated_at_utc: parsed.updated_at_utc,
     notification_channel_ids: JSON.parse(parsed.notification_channel_ids || '["email"]') as string[],
   };
+}
+
+function resolveTaskType(record: Record<string, unknown>, notificationChannelIds: string[]): TaskType {
+  const value = readOptionalString(record, ["taskType", "task_type"])
+    ?? (notificationChannelIds.includes("email") ? "confirmation" : "scheduled");
+  if (value !== "scheduled" && value !== "confirmation") {
+    throw new AdminInputError("taskType must be scheduled or confirmation");
+  }
+  return value;
 }
 
 function resolveNotificationChannelIds(record: Record<string, unknown>): string[] {

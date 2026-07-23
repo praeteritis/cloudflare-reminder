@@ -29,13 +29,7 @@ export async function sendReminderEmail(
   type: ReminderDeliveryType,
   idempotencyKey: string
 ): Promise<EmailSendResult> {
-  const subject = `[R:${runId}] ${task.title}`;
-  const text = `${task.body}
-
----
-完成后，请直接回复本邮件。
-回复第一行只写：
-1`;
+  const { subject, text } = buildReminderEmailContent(task, runId);
 
   return sendEmail(env, {
     runId,
@@ -46,6 +40,24 @@ export async function sendReminderEmail(
     text,
     idempotencyKey,
   });
+}
+
+export function buildReminderEmailContent(task: Pick<Task, "title" | "body" | "task_type">, runId: string): {
+  subject: string;
+  text: string;
+} {
+  if ((task.task_type ?? "confirmation") === "scheduled") {
+    return { subject: task.title, text: task.body };
+  }
+  return {
+    subject: `[R:${runId}] ${task.title}`,
+    text: `${task.body}
+
+---
+完成后，请直接回复本邮件。
+回复第一行只写：
+1`,
+  };
 }
 
 export async function handleInboundReply(message: InboundEmailMessage, env: Env): Promise<void> {

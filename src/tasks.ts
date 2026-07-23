@@ -14,6 +14,7 @@ export async function insertTask(env: Env, task: Task): Promise<void> {
        title,
        body,
        status,
+       task_type,
        timezone,
        first_due_at_utc,
        next_due_at_utc,
@@ -28,7 +29,7 @@ export async function insertTask(env: Env, task: Task): Promise<void> {
        updated_at_utc,
        deleted_at_utc,
        notification_channel_ids
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       task.id,
@@ -37,6 +38,7 @@ export async function insertTask(env: Env, task: Task): Promise<void> {
       task.title,
       task.body,
       task.status,
+      task.task_type ?? "confirmation",
       task.timezone,
       task.first_due_at_utc,
       task.next_due_at_utc,
@@ -266,6 +268,7 @@ export async function updateTaskFromAdminInput(env: Env, id: string, input: unkn
        SET recipient_email = ?,
            title = ?,
            body = ?,
+           task_type = ?,
            timezone = ?,
            first_due_at_utc = ?,
            next_due_at_utc = ?,
@@ -283,6 +286,7 @@ export async function updateTaskFromAdminInput(env: Env, id: string, input: unkn
       update.recipient_email,
       update.title,
       update.body,
+      update.task_type,
       update.timezone,
       update.first_due_at_utc,
       update.next_due_at_utc,
@@ -388,6 +392,7 @@ export function serializeTask(task: Task) {
     title: task.title,
     body: task.body,
     status: task.status,
+    taskType: task.task_type ?? "confirmation",
     timezone: DEFAULT_TIMEZONE,
     firstDueAtUtc: task.first_due_at_utc,
     nextDueAtUtc: task.next_due_at_utc,

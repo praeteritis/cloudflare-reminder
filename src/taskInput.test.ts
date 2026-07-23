@@ -10,6 +10,7 @@ describe("buildTaskFromAdminInput", () => {
       minutesFromNow: 10,
     });
     expect(JSON.parse(task.notification_channel_ids || "[]")).toEqual(["email"]);
+    expect(task.task_type).toBe("confirmation");
   });
 
   it("deduplicates selected notification channels", () => {
@@ -48,6 +49,26 @@ describe("buildTaskFromAdminInput", () => {
       minutesFromNow: 10,
       notificationChannelIds: ["email"],
     })).toThrow("recipientEmail is required");
+  });
+
+  it("requires email for an explicit confirmation task", () => {
+    expect(() => buildTaskFromAdminInput({
+      taskType: "confirmation",
+      title: "Confirm me",
+      minutesFromNow: 10,
+      notificationChannelIds: ["channel_123"],
+    })).toThrow("Confirmation tasks must include the email notification channel");
+  });
+
+  it("builds an explicit scheduled task without completion tracking", () => {
+    const task = buildTaskFromAdminInput({
+      taskType: "scheduled",
+      title: "Scheduled reminder",
+      minutesFromNow: 10,
+      notificationChannelIds: ["channel_123"],
+    });
+
+    expect(task.task_type).toBe("scheduled");
   });
 
   it("ignores a recipient email when email delivery is not selected", () => {

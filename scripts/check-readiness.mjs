@@ -43,12 +43,13 @@ const tables = run("npx", [
   "personal-reminder",
   "--remote",
   "--command",
-  "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name;",
+  "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name; PRAGMA table_info(tasks);",
   ...configArgs,
 ]);
 addCheck("Remote D1 has tasks table", tables.stdout.includes('"tasks"'));
 addCheck("Remote D1 has reminder_runs table", tables.stdout.includes('"reminder_runs"'));
 addCheck("Remote D1 has send_logs table", tables.stdout.includes('"send_logs"'));
+addCheck("Remote D1 has task_type column", tables.stdout.includes('"task_type"'));
 
 const deployments = run("npx", [
   "wrangler",

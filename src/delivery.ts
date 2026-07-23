@@ -291,6 +291,11 @@ async function updateRunAfterReminderDelivery(
 ): Promise<void> {
   const sentAtIso = sentAt.toISOString();
 
+  if ((task.task_type ?? "confirmation") === "scheduled") {
+    await closeRunAfterScheduledDelivery(env, task, runId, sentAt);
+    return;
+  }
+
   if (hasReachedNagLimitAfterDelivery(task)) {
     await closeRunAfterMaxNagCount(env, task, runId, sentAt);
     return;
@@ -310,6 +315,47 @@ async function updateRunAfterReminderDelivery(
     .run();
 
   void type;
+}
+
+async function closeRunAfterScheduledDelivery(env: Env, task: TaskRunRow, runId: string, completedAt: Date): Promise<void> {
+  const completedAtIso = completedAt.toISOString();
+  const nextDueAt = calculateNextDueAt(task, completedAt);
+  const result = await env.DB.prepare(
+    `UPDATE reminder_runs
+     SET sent_count = sent_count + 1,
+         last_sent_at_utc = ?,
+         status = 'completed',
+         next_nag_at_utc = NULL,
+         completed_at_utc = ?,
+         completed_by = 'system:delivered',
+         updated_at_utc = ?
+     WHERE id = ? AND status = 'open'`
+  ).bind(completedAtIso, completedAtIso, completedAtIso, runId).run();
+  if (result.meta.changes === 0) return;
+
+  if (nextDueAt) {
+    await env.DB.prepare(
+      `UPDATE tasks
+       SET current_run_id = NULL,
+           next_due_at_utc = ?,
+           status = 'active',
+           updated_at_utc = ?
+       WHERE id = ? AND current_run_id = ?`
+    ).bind(nextDueAt.toISOString(), completedAtIso, task.id, runId).run();
+  } else {
+    await env.DB.prepare(
+      `UPDATE tasks
+       SET current_run_id = NULL,
+           status = 'done',
+           updated_at_utc = ?
+       WHERE id = ? AND current_run_id = ?`
+    ).bind(completedAtIso, task.id, runId).run();
+  }
+
+  await logAudit(env, { type: "system", email: "system" }, "scheduled_notification_delivered", "task", task.id, {
+    runId,
+    nextDueAtUtc: nextDueAt?.toISOString() ?? null,
+  });
 }
 
 export function hasReachedNagLimitAfterDelivery(task: Pick<TaskRunRow, "run_sent_count" | "max_nag_count">): boolean {

@@ -1,6 +1,7 @@
 export type RecurrenceType = "none" | "interval";
 export type RecurrenceAnchor = "scheduled_time" | "completion_time";
 export type TaskStatus = "active" | "done" | "paused" | "cancelled";
+export type TaskType = "scheduled" | "confirmation";
 export type UserStatus = "active" | "banned";
 export type NotificationChannelType =
   | "bark"
@@ -35,6 +36,7 @@ export interface Task {
   title: string;
   body: string;
   status: TaskStatus;
+  task_type?: TaskType;
   timezone: string;
   first_due_at_utc: string;
   next_due_at_utc: string;
@@ -94,6 +96,7 @@ export interface TaskUpdateInput {
   recurrence_end_at_utc: string | null;
   nag_interval_minutes: number;
   max_nag_count: number;
+  task_type: TaskType;
   updated_at_utc: string;
   notification_channel_ids: string[];
 }
